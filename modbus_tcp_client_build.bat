@@ -54,9 +54,11 @@ if not exist temp_client_icon.png (
     echo Temporary icon created successfully
 )
 
-echo Building client application...
+echo Building client application with version info...
 pyinstaller --noconfirm --onefile --windowed ^
+    --add-data "%ICON_PATH%;." ^
     --icon=%ICON_PATH% ^
+    --version-file=modbus_tcp_client_version.txt ^
     --name "modbus_tcp_client" ^
     --hidden-import=pymodbus.client ^
     --hidden-import=pymodbus.exceptions ^

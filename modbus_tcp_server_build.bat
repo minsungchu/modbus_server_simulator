@@ -58,9 +58,10 @@ if not exist %ICON_PATH% (
     )
 )
 
-echo Building server application with size optimization...
+echo Building server application with size optimization and version info...
 pyinstaller --noconfirm --onefile --windowed ^
     --icon=%ICON_PATH% ^
+    --version-file=modbus_tcp_server_version.txt ^
     --name "modbus_tcp_server" ^
     --hidden-import=pymodbus.server ^
     --hidden-import=pymodbus.transaction ^
