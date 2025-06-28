@@ -117,6 +117,9 @@ class ModbusClientSimulator(QMainWindow):
         self.register_groups = {}
         self.register_widgets = {}
         
+        # 동적 아이콘 저장용 딕셔너리
+        self.dynamic_icons = {}
+        
         # 타이머 초기화 (주기적 데이터 갱신용)
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self.update_registers)
@@ -228,6 +231,7 @@ class ModbusClientSimulator(QMainWindow):
         클라이언트 아이콘 생성 및 설정
         
         서버와 구분되는 클라이언트용 아이콘을 생성하고 애플리케이션에 설정합니다.
+        아이콘은 파일로 저장하지 않고 메모리에 직접 유지합니다.
         """
         # 아이콘 생성
         pixmap = QPixmap(64, 64)
@@ -253,106 +257,89 @@ class ModbusClientSimulator(QMainWindow):
         
         painter.end()
         
-        # 아이콘 설정
+        # 아이콘 생성 및 저장
         icon = QIcon(pixmap)
+        self.dynamic_icons['client_icon'] = icon  # 메모리에 저장
         self.setWindowIcon(icon)
+        QApplication.instance().setWindowIcon(icon)  # 모든 창에 아이콘 적용
         
-        logger.info("클라이언트 아이콘 생성 및 설정 완료")
+        logger.info("클라이언트 아이콘 생성 및 메모리에 저장 완료")
         
-        # 아이콘 파일로 저장 (선택적)
-        try:
-            if not os.path.exists("resources"):
-                os.makedirs("resources")
-            pixmap.save("resources/client_icon.png")
-            logger.info("클라이언트 아이콘 파일 저장 완료: resources/client_icon.png")
-            
-            # 드롭다운 화살표 아이콘 생성 및 저장
-            self.create_dropdown_arrow_icon()
-        except Exception as e:
-            logger.warning(f"아이콘 파일 저장 실패: {e}")
-            # 아이콘 저장 실패는 중요한 오류가 아니므로 계속 진행
+        # 드롭다운 화살표 아이콘 생성
+        self.create_dropdown_arrow_icon()
             
     def create_dropdown_arrow_icon(self):
         """
-        드롭다운 화살표 아이콘 생성 및 저장
+        드롭다운 화살표 아이콘 생성
         
-        콤보박스에 사용할 드롭다운 화살표 아이콘을 생성하고 저장합니다.
+        콤보박스에 사용할 드롭다운 화살표 아이콘을 생성하고 메모리에 저장합니다.
         """
-        try:
-            # 아이콘 생성
-            pixmap = QPixmap(12, 12)
-            pixmap.fill(Qt.transparent)
-            
-            painter = QPainter(pixmap)
-            painter.setRenderHint(QPainter.Antialiasing)
-            
-            # 화살표 그리기
-            painter.setPen(QPen(QColor("#1b5e20"), 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-            painter.setBrush(QColor("#1b5e20"))
-            
-            # 아래쪽을 가리키는 삼각형 그리기
-            points = [QPoint(2, 4), QPoint(10, 4), QPoint(6, 8)]
-            painter.drawPolygon(QPolygon(points))
-            
-            painter.end()
-            
-            # 아이콘 파일로 저장
-            pixmap.save("resources/dropdown_arrow.png")
-            logger.info("드롭다운 화살표 아이콘 파일 저장 완료: resources/dropdown_arrow.png")
-        except Exception as e:
-            logger.warning(f"드롭다운 화살표 아이콘 파일 저장 실패: {e}")
-            # 아이콘 저장 실패는 중요한 오류가 아니므로 계속 진행
+        # 아이콘 생성
+        pixmap = QPixmap(12, 12)
+        pixmap.fill(Qt.transparent)
+        
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # 화살표 그리기
+        painter.setPen(QPen(QColor("#1b5e20"), 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        painter.setBrush(QColor("#1b5e20"))
+        
+        # 아래쪽을 가리키는 삼각형 그리기
+        points = [QPoint(2, 4), QPoint(10, 4), QPoint(6, 8)]
+        painter.drawPolygon(QPolygon(points))
+        
+        painter.end()
+        
+        # 아이콘 동적 저장
+        icon = QIcon(pixmap)
+        self.dynamic_icons['dropdown_arrow'] = icon  # 메모리에 저장
+        
+        logger.info("드롭다운 화살표 아이콘 생성 및 메모리에 저장 완료")
             
     def create_connection_button_icons(self):
         """
         연결 버튼용 아이콘 생성
         
-        연결 및 연결 해제 상태에 사용할 아이콘을 생성합니다.
+        연결 및 연결 해제 상태에 사용할 아이콘을 생성하고 메모리에 저장합니다.
         """
-        try:
-            # 연결 아이콘 생성 (초록색 플러스)
-            connect_pixmap = QPixmap(16, 16)
-            connect_pixmap.fill(Qt.transparent)
-            
-            connect_painter = QPainter(connect_pixmap)
-            connect_painter.setRenderHint(QPainter.Antialiasing)
-            
-            # 플러스 기호 그리기
-            connect_painter.setPen(QPen(QColor("#1b5e20"), 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-            connect_painter.drawLine(8, 4, 8, 12)  # 세로선
-            connect_painter.drawLine(4, 8, 12, 8)  # 가로선
-            
-            connect_painter.end()
-            
-            # 연결 해제 아이콘 생성 (빨간색 X)
-            disconnect_pixmap = QPixmap(16, 16)
-            disconnect_pixmap.fill(Qt.transparent)
-            
-            disconnect_painter = QPainter(disconnect_pixmap)
-            disconnect_painter.setRenderHint(QPainter.Antialiasing)
-            
-            # X 기호 그리기
-            disconnect_painter.setPen(QPen(QColor("white"), 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-            disconnect_painter.drawLine(4, 4, 12, 12)  # 왼쪽 위에서 오른쪽 아래로
-            disconnect_painter.drawLine(4, 12, 12, 4)  # 왼쪽 아래에서 오른쪽 위으로
-            
-            disconnect_painter.end()
-            
-            # 아이콘 저장
-            if not os.path.exists("resources"):
-                os.makedirs("resources")
-                
-            connect_pixmap.save("resources/connect_icon.png")
-            disconnect_pixmap.save("resources/disconnect_icon.png")
-            
-            # 아이콘 설정
-            self.connect_icon = QIcon("resources/connect_icon.png")
-            self.disconnect_icon = QIcon("resources/disconnect_icon.png")
-            
-            logger.info("연결 버튼 아이콘 생성 및 저장 완료")
-        except Exception as e:
-            logger.warning(f"연결 버튼 아이콘 생성 실패: {e}")
-            # 아이콘 생성 실패는 중요한 오류가 아니므로 계속 진행
+        # 연결 아이콘 생성 (초록색 플러스)
+        connect_pixmap = QPixmap(16, 16)
+        connect_pixmap.fill(Qt.transparent)
+        
+        connect_painter = QPainter(connect_pixmap)
+        connect_painter.setRenderHint(QPainter.Antialiasing)
+        
+        # 플러스 기호 그리기
+        connect_painter.setPen(QPen(QColor("#1b5e20"), 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        connect_painter.drawLine(8, 4, 8, 12)  # 세로선
+        connect_painter.drawLine(4, 8, 12, 8)  # 가로선
+        
+        connect_painter.end()
+        
+        # 연결 해제 아이콘 생성 (빨간색 X)
+        disconnect_pixmap = QPixmap(16, 16)
+        disconnect_pixmap.fill(Qt.transparent)
+        
+        disconnect_painter = QPainter(disconnect_pixmap)
+        disconnect_painter.setRenderHint(QPainter.Antialiasing)
+        
+        # X 기호 그리기
+        disconnect_painter.setPen(QPen(QColor("white"), 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        disconnect_painter.drawLine(4, 4, 12, 12)  # 왼쪽 위에서 오른쪽 아래로
+        disconnect_painter.drawLine(4, 12, 12, 4)  # 왼쪽 아래에서 오른쪽 위으로
+        
+        disconnect_painter.end()
+        
+        # 아이콘 설정 - 메모리에 저장
+        self.connect_icon = QIcon(connect_pixmap)
+        self.disconnect_icon = QIcon(disconnect_pixmap)
+        
+        # 메모리 동적 저장소에도 추가
+        self.dynamic_icons['connect_icon'] = self.connect_icon
+        self.dynamic_icons['disconnect_icon'] = self.disconnect_icon
+        
+        logger.info("연결 버튼 아이콘 생성 및 메모리에 저장 완료")
         
     def init_connection_settings(self, parent_layout):
         """연결 설정 UI 초기화"""
@@ -504,8 +491,20 @@ class ModbusClientSimulator(QMainWindow):
             
             logger.info(f"서버에 연결 시도: {host}:{port}")
             
-            # 클라이언트 객체 생성
-            self.client = ModbusTcpClient(host, port)
+            # pymodbus 버전 호환성 대응 (2.x vs 3.x)
+            try:
+                # pymodbus 3.x 방식 시도
+                self.client = ModbusTcpClient(host=host, port=port, framer='socket')
+                logger.info("pymodbus 3.x 스타일로 클라이언트 초기화 (host, port, framer 인자 사용)")
+            except TypeError:
+                try:
+                    # framer 없이 시도 (3.x의 일부 버전)
+                    self.client = ModbusTcpClient(host=host, port=port)
+                    logger.info("pymodbus 3.x 스타일로 클라이언트 초기화 (host, port 인자만 사용)")
+                except TypeError:
+                    # pymodbus 2.x 방식 시도
+                    self.client = ModbusTcpClient(host, port)
+                    logger.info("pymodbus 2.x 스타일로 클라이언트 초기화 (위치 인자 사용)")
             
             # 연결 시도
             if self.client.connect():
@@ -763,7 +762,7 @@ class ModbusClientSimulator(QMainWindow):
         try:
             if reg_type == "coils":
                 # 코일은 최대 2000개까지 한번에 읽을 수 있음
-                result = self.client.read_coils(start_addr, count)
+                result = self.client.read_coils(address=start_addr, count=count)
                 if result.isError():
                     raise Exception(f"Modbus error: {result}")
                 widget.update_values(result.bits)
@@ -781,13 +780,13 @@ class ModbusClientSimulator(QMainWindow):
                     for i in range(0, count, max_registers_per_read):
                         batch_count = min(max_registers_per_read, count - i)
                         batch_start = start_addr + i
-                        result = self.client.read_holding_registers(batch_start, batch_count)
+                        result = self.client.read_holding_registers(address=batch_start, count=batch_count)
                         if result.isError():
                             raise Exception(f"Modbus error: {result}")
                         all_registers.extend(result.registers)
                     widget.update_values(all_registers)
                 else:
-                    result = self.client.read_holding_registers(start_addr, count)
+                    result = self.client.read_holding_registers(address=start_addr, count=count)
                     if result.isError():
                         raise Exception(f"Modbus error: {result}")
                     widget.update_values(result.registers)
@@ -799,13 +798,13 @@ class ModbusClientSimulator(QMainWindow):
                     for i in range(0, count, max_registers_per_read):
                         batch_count = min(max_registers_per_read, count - i)
                         batch_start = start_addr + i
-                        result = self.client.read_input_registers(batch_start, batch_count)
+                        result = self.client.read_input_registers(address=batch_start, count=batch_count)
                         if result.isError():
                             raise Exception(f"Modbus error: {result}")
                         all_registers.extend(result.registers)
                     widget.update_values(all_registers)
                 else:
-                    result = self.client.read_input_registers(start_addr, count)
+                    result = self.client.read_input_registers(address=start_addr, count=count)
                     if result.isError():
                         raise Exception(f"Modbus error: {result}")
                     widget.update_values(result.registers)
@@ -824,7 +823,7 @@ class ModbusClientSimulator(QMainWindow):
             
         try:
             if reg_type == "coils":
-                result = self.client.read_coils(address, 1)
+                result = self.client.read_coils(address=address, count=1)
                 if result.isError():
                     raise Exception(f"Modbus error: {result}")
                 value = result.bits[0]
@@ -832,7 +831,7 @@ class ModbusClientSimulator(QMainWindow):
                 return value
                 
             elif reg_type == "discrete_inputs":
-                result = self.client.read_discrete_inputs(address, 1)
+                result = self.client.read_discrete_inputs(address=address, count=1)
                 if result.isError():
                     raise Exception(f"Modbus error: {result}")
                 value = result.bits[0]
@@ -840,7 +839,7 @@ class ModbusClientSimulator(QMainWindow):
                 return value
                 
             elif reg_type == "holding_registers":
-                result = self.client.read_holding_registers(address, 1)
+                result = self.client.read_holding_registers(address=address, count=1)
                 if result.isError():
                     raise Exception(f"Modbus error: {result}")
                 value = result.registers[0]
@@ -848,7 +847,7 @@ class ModbusClientSimulator(QMainWindow):
                 return value
                 
             elif reg_type == "input_registers":
-                result = self.client.read_input_registers(address, 1)
+                result = self.client.read_input_registers(address=address, count=1)
                 if result.isError():
                     raise Exception(f"Modbus error: {result}")
                 value = result.registers[0]
@@ -873,14 +872,14 @@ class ModbusClientSimulator(QMainWindow):
             
         try:
             if reg_type == "coils":
-                result = self.client.write_coil(address, bool(value))
+                result = self.client.write_coil(address=address, value=bool(value))
                 if result.isError():
                     raise Exception(f"Modbus error: {result}")
                 logger.info(f"Wrote coil {address} = {value}")
                 return True
                 
             elif reg_type == "holding_registers":
-                result = self.client.write_register(address, value)
+                result = self.client.write_register(address=address, value=value)
                 if result.isError():
                     raise Exception(f"Modbus error: {result}")
                 logger.info(f"Wrote holding register {address} = {value}")
@@ -1342,10 +1341,15 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     # Qt 6에서는 기본적으로 고해상도 픽스맵을 사용하므로 속성 설정 제거
     
-    # 애플리케이션 아이콘 설정
-    app_icon = QIcon("icon.png") if os.path.exists("icon.png") else None
-    if app_icon:
-        app.setWindowIcon(app_icon)
+    # 애플리케이션 아이콘 설정 (작업 표시줄 아이콘용)
+    app_icon = QIcon("resources/app_icon.svg")
+    app.setWindowIcon(app_icon)
+    
+    # Windows에서 작업 표시줄 아이콘을 설정하기 위한 추가 작업
+    import ctypes
+    if hasattr(ctypes, 'windll'):  # Windows 환경에서만 실행
+        myappid = 'CMES.ModbusTCP.ClientSimulator.1.0'  # 고유 애플리케이션 ID
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
     
     # 폰트 설정
     font = app.font()
@@ -1354,6 +1358,8 @@ if __name__ == "__main__":
     
     # 애플리케이션 시작
     window = ModbusClientSimulator()
+    window.setWindowIcon(app_icon)  # 창 아이콘 설정
     window.show()
     
+    logger.info("클라이언트 애플리케이션 실행")
     sys.exit(app.exec())

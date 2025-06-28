@@ -15,15 +15,135 @@ Modbus TCP 서버 시뮬레이터
 import sys
 import time
 import logging
-import traceback
-import json
-import os
 import threading
-from threading import Thread
+import time
+import os
+import sys
+from datetime import datetime
+import socket
+from contextlib import closing
+
+
+# 내장된 스타일시트 (resources/style.qss 파일 내용을 직접 포함)
+EMBEDDED_QSS_STYLE = """/* Neumorphism Style Sheet for Modbus TCP Server Simulator */
+
+/* 전체 애플리케이션 스타일 */
+QWidget {
+    background-color: #e0e5ec;
+    color: #333;
+    font-family: "Segoe UI", Arial, sans-serif;
+    font-size: 10pt;
+}
+
+/* 타이틀 레이블 스타일 개선 */
+#title_label {
+    color: #2980b9;
+    font-size: 18pt;
+    font-weight: bold;
+    padding: 15px;
+    border-bottom: 2px solid #3498db;
+    margin-bottom: 5px;
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #f0f5fa, stop:1 #e0e5ec);
+    border-radius: 10px;
+}
+
+/* 그룹박스 스타일 */
+QGroupBox {
+    border: 1px solid #bec8d1;
+    border-radius: 15px;
+    margin-top: 1.5em;
+    padding: 15px;
+    background-color: #f0f5fa;
+    /* 뉴모피즘 효과는 코드에서 QGraphicsDropShadowEffect로 적용됨 */
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top center;
+    padding: 0 12px;
+    color: #2980b9;
+    font-weight: bold;
+    font-size: 12pt;
+    background-color: #f0f5fa;
+    border: 1px solid #bec8d1;
+    border-radius: 8px;
+}
+
+/* 레지스터 그룹 스타일 */
+#coils_group {
+    background-color: #fff8f0;
+    border-top: 3px solid #ff8c00;
+}
+
+#discrete_inputs_group {
+    background-color: #ebf5fb;
+    border-top: 3px solid #3498db;
+}
+
+#holding_registers_group {
+    background-color: #f4ecf7;
+    border-top: 3px solid #9b59b6;
+}
+
+#input_registers_group {
+    background-color: #eafaf1;
+    border-top: 3px solid #2ecc71;
+}
+
+/* 연결 설정 그룹 스타일 */
+#connection_group {
+    background-color: #f5f7fa;
+    border-top: 3px solid #34495e;
+    padding: 3px;
+}
+
+/* 버튼 스타일 */
+QPushButton {
+    background-color: #f0f5fa;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 12px;
+    color: #3498db;
+    font-weight: bold;
+}
+
+QPushButton:hover {
+    background-color: #e5eef7;
+    color: #2980b9;
+}
+
+QPushButton:pressed {
+    background-color: #e0e5ec;
+    padding: 11px 21px 9px 19px; /* 눌렸을 때 약간 이동하는 효과 */
+}
+
+/* 입력 필드 스타일 */
+QLineEdit, QSpinBox {
+    background-color: #f5f7fa;
+    border: 1px solid #bec8d1;
+    border-radius: 10px;
+    padding: 8px;
+    color: #2d3436;
+}
+
+/* 체크박스 스타일 */
+QCheckBox {
+    spacing: 10px;
+    color: #2c3e50;
+    font-weight: 500;
+}
+
+/* 라벨 스타일 */
+QLabel {
+    color: #2c3e50;
+    font-weight: 500;
+    padding: 5px;
+}
+"""
 
 # PySide6 관련 임포트
-from PySide6.QtCore import QObject, Signal, Slot, QTimer, Qt, QRegularExpression, QThread, QSize
-from PySide6.QtGui import QIntValidator, QRegularExpressionValidator, QPixmap, QPainter, QColor, QLinearGradient, QBrush, QPen, QFont, QIcon
+from PySide6.QtCore import QObject, Signal, Slot, QTimer, Qt, QRegularExpression, QThread, QSize, QPoint, QRect
+from PySide6.QtGui import QIntValidator, QRegularExpressionValidator, QPixmap, QPainter, QColor, QLinearGradient, QBrush, QPen, QFont, QIcon, QPolygon
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QLabel, QLineEdit, QPushButton, QGroupBox, QCheckBox, QGridLayout,
@@ -34,9 +154,17 @@ from PySide6.QtWidgets import (
 from pymodbus.datastore import ModbusSequentialDataBlock, ModbusServerContext, ModbusSlaveContext
 from pymodbus.device import ModbusDeviceIdentification
 
-# pymodbus 3.0.0 버전에 맞게 import 문 수정
+# pymodbus 버전 호환성을 위한 import 처리
 from pymodbus.server import StartTcpServer
-from pymodbus.transaction import ModbusSocketFramer
+
+# pymodbus 버전에 따른 호환성 처리
+try:
+    from pymodbus.framer.socket_framer import ModbusSocketFramer  # 최신 버전
+except ImportError:
+    try:
+        from pymodbus.transaction import ModbusSocketFramer  # 구버전
+    except ImportError:
+        ModbusSocketFramer = None  # 모듈이 없으면 None으로 설정
 
 # StopServer 함수가 없으므로 직접 구현
 def StopServer():
@@ -122,7 +250,6 @@ class CustomModbusSlaveContext(ModbusSlaveContext):
             logger.info(f"[getValues] 함수 코드: {fx}, 요청 주소: {address}, HR 오프셋: {self.hr_offset}")
             
             # Get the current call stack to determine if this is from UI or external client
-            import traceback
             stack = traceback.extract_stack()
             caller = stack[-2].name if len(stack) >= 2 else "unknown"
             is_ui_request = caller in ["update_ui_from_context", "update_context_from_ui"]
@@ -333,6 +460,7 @@ class ModbusServerThread(QThread):
         print(f"ModbusServerThread 초기화: {address}:{port}")
 
     def run(self):
+        import traceback
         try:
             self.running = True
             self._stop_requested = False
@@ -352,25 +480,79 @@ class ModbusServerThread(QThread):
             self._server_started = True
             self.signals.server_started.emit()
             
-            # 다양한 pymodbus 버전을 지원하기 위한 서버 시작 방법
-                        # pymodbus 3.0.0 버전에 맞게 서버 시작
+            # 먼저 포트가 이미 사용 중인지 확인
             try:
-                # StartTcpServer를 사용하여 서버 시작
+                import socket
+                test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                test_socket.settimeout(1)
+                result = test_socket.connect_ex((self.address, self.port))
+                test_socket.close()
+                if result == 0:
+                    logger.error(f"Port {self.port} is already in use!")
+                    print(f"Port {self.port} is already in use!")
+                    # 포트 사용 중 오류 메시지 전달을 위해 예외 발생
+                    raise Exception(f"Port {self.port} is already in use. Please select a different port.")
+            except Exception as e:
+                if "already in use" in str(e):
+                    # 이미 발생한 예외 재사용
+                    logger.error(f"{str(e)}")
+                    raise
+                # 소켓 테스트 중 다른 오류가 발생했다면 무시하고 계속 진행
+                logger.warning(f"Socket test failed: {e}, continuing anyway")
+            
+            # 다양한 pymodbus 버전을 지원하기 위한 서버 시작 방법
+            # 상세한 예외 처리를 위해 다양한 방법 시도
+            try:
+                # 1. pymodbus 3.0.0 버전에 맞게 서버 시작 시도
+                logger.info("Attempting to start server with pymodbus 3.0.0 compatible method")
+                # pymodbus 3.x에서 framer는 문자열 또는 클래스가 아닌 프레이머 이름을 사용해야 함
                 StartTcpServer(
                     context=self.context,
                     identity=identity,
                     address=(self.address, self.port),
-                    framer=ModbusSocketFramer,
+                    framer="socket",  # ModbusSocketFramer 대신 "socket" 문자열 사용
                     # 이 호출은 블록하고 이 스레드가 종료될 때까지 리턴하지 않음
                 )
             except Exception as e:
-                logger.error(f"Error starting Modbus server: {e}")
-                print(f"Error starting Modbus server: {e}")
-                raise
+                logger.error(f"Error using primary server start method: {e}")
+                logger.error(f"Exception type: {type(e).__name__}")
+                logger.error(f"Traceback: {traceback.format_exc()}")
+                print(f"Error using primary server start method: {e}")
+                
+                # 2. 대체 시작 방법 시도 (특정 오류가 발생한 경우에만)
+                if "argument after ** must be a mapping" in str(e) or \
+                   "got multiple values for argument" in str(e) or \
+                   "__init__() got an unexpected keyword argument" in str(e):
+                    try:
+                        logger.info("Attempting alternative server start method")
+                        print("Attempting alternative server start method")
+                        # 인자 구조를 다르게 시도
+                        StartTcpServer(
+                            context=self.context,
+                            address=(self.address, self.port),
+                            framer="socket",  # ModbusSocketFramer 대신 "socket" 문자열 사용
+                            identity=identity
+                        )
+                    except Exception as alt_e:
+                        logger.error(f"Error using alternative server start method: {alt_e}")
+                        logger.error(f"Traceback: {traceback.format_exc()}")
+                        print(f"Error using alternative server start method: {alt_e}")
+                        raise
+                else:
+                    # 특정 오류가 아닌 경우 원래 예외를 다시 발생시킴
+                    raise
                 
         except Exception as e:
             logger.error(f"Error starting Modbus server: {e}")
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             print(f"Error starting Modbus server: {e}")
+            # 오류 발생 시 시그널 전송 (UI 업데이트를 위해)
+            if hasattr(self, 'signals'):
+                try:
+                    # 에러 정보를 포함한 커스텀 시그널을 만들고 사용할 수도 있음
+                    self.signals.server_stopped.emit()
+                except Exception as signal_e:
+                    logger.error(f"Error emitting signal: {signal_e}")
         finally:
             self.running = False
             self._server_started = False
@@ -810,6 +992,9 @@ class ModbusServerSimulator(QMainWindow):
         # 애플리케이션 아이콘 설정
         self.create_server_icon()
         
+        # 버튼 아이콘 생성
+        self.create_button_icons()
+        
         # 스타일시트 적용
         self.load_stylesheet()
         
@@ -844,56 +1029,183 @@ class ModbusServerSimulator(QMainWindow):
         self.timer.start(1000)  # Update every 1000ms (1초) - 업데이트 빈도 감소
     
     def create_server_icon(self):
-        """서버 아이콘 생성 및 설정
+        """서버 애플리케이션의 아이콘 생성
         
-        클라이언트와 구분되는 서버용 아이콘을 생성하고 애플리케이션에 설정합니다.
+        Modbus TCP 서버 애플리케이션을 식별하는 데 사용되는 아이콘입니다.
+        'S' 문자가 포함된 아이콘을 생성합니다.
         """
-        # 아이콘 이미지 생성 (동적으로 생성)
+        # 서버 아이콘 생성 (S 문자 포함)
         pixmap = QPixmap(64, 64)
         pixmap.fill(Qt.transparent)
-        
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.Antialiasing)
-        
-        # 그라데이션 배경
         gradient = QLinearGradient(0, 0, 64, 64)
-        gradient.setColorAt(0, QColor(30, 58, 95))  # 다크 블루
-        gradient.setColorAt(1, QColor(44, 76, 124))  # 블루
-        
+        gradient.setColorAt(0, QColor(30, 58, 95))  # 더 어두운 파란색
+        gradient.setColorAt(1, QColor(44, 76, 124))  # 약간 더 밝은 파란색
         painter.setBrush(QBrush(gradient))
-        painter.setPen(QPen(QColor(58, 94, 140), 2))  # 더 밝은 블루 테두리
+        painter.setPen(QPen(QColor(58, 94, 140), 2))
         painter.drawRoundedRect(4, 4, 56, 56, 10, 10)
-        
-        # 'S' 글자 (Server)
-        painter.setPen(QPen(QColor(255, 255, 255), 2))
+        painter.setPen(QPen(QColor(255, 255, 255), 2))  # 흰색 펜
         painter.setFont(QFont("Arial", 32, QFont.Bold))
         painter.drawText(pixmap.rect(), Qt.AlignCenter, "S")
-        
         painter.end()
-        
-        # 아이콘 설정
         icon = QIcon(pixmap)
         self.setWindowIcon(icon)
         
-        logger.info("서버 아이콘 생성 및 설정 완료")
+        # 더 이상 파일로 저장하지 않음 (외부 파일 생성 방지)
         print("서버 아이콘 생성 및 설정 완료")
+
+    def create_button_icons(self):
+        """모든 버튼 아이콘을 동적으로 생성
         
-        # 아이콘 파일로 저장 (선택적)
-        try:
-            if not os.path.exists("resources"):
-                os.makedirs("resources")
-            pixmap.save("resources/server_icon.png")
-            logger.info("서버 아이콘 파일 저장 완료: resources/server_icon.png")
-            print("서버 아이콘 파일 저장 완료: resources/server_icon.png")
-        except Exception as e:
-            logger.warning(f"아이콘 파일 저장 실패: {e}")
-            print(f"아이콘 파일 저장 실패: {e}")
-            # 아이콘 저장 실패는 중요한 오류가 아니므로 계속 진행
+        외부 SVG 파일 대신 코드에서 직접 아이콘을 생성하여 
+        실행 파일에 모든 아이콘이 포함되도록 합니다.
+        """
+        # 아이콘 저장 딕셔너리
+        self.dynamic_icons = {}
+        
+        # 시작(연결) 아이콘 생성
+        start_icon = QPixmap(64, 64)
+        start_icon.fill(Qt.transparent)
+        painter = QPainter(start_icon)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # 초록색 원형 배경
+        painter.setBrush(QColor(0, 180, 0))
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(4, 4, 56, 56)
+        
+        # 삼각형 재생 심볼
+        painter.setBrush(QColor(255, 255, 255))
+        points = [QPoint(20, 16), QPoint(20, 48), QPoint(48, 32)]
+        painter.drawPolygon(QPolygon(points))
+        painter.end()
+        
+        self.dynamic_icons["start"] = QIcon(start_icon)
+        self.start_icon = self.dynamic_icons["start"]
+        
+        # 중지(연결 해제) 아이콘 생성
+        stop_icon = QPixmap(64, 64)
+        stop_icon.fill(Qt.transparent)
+        painter = QPainter(stop_icon)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # 빨간색 원형 배경
+        painter.setBrush(QColor(180, 0, 0))
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(4, 4, 56, 56)
+        
+        # 정사각형 중지 심볼
+        painter.setBrush(QColor(255, 255, 255))
+        painter.drawRect(20, 20, 24, 24)
+        painter.end()
+        
+        self.dynamic_icons["stop"] = QIcon(stop_icon)
+        self.stop_icon = self.dynamic_icons["stop"]
+        
+        # 코일 아이콘 생성
+        coil_icon = QPixmap(64, 64)
+        coil_icon.fill(Qt.transparent)
+        painter = QPainter(coil_icon)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # 파란색 배경
+        painter.setBrush(QColor(47, 108, 146))
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(4, 4, 56, 56, 10, 10)
+        
+        # 코일 심볼 (원형으로 감긴 선)
+        painter.setPen(QPen(QColor(255, 255, 255), 3))
+        painter.drawEllipse(16, 16, 32, 32)
+        painter.drawEllipse(22, 22, 20, 20)
+        painter.end()
+        
+        self.dynamic_icons["coil"] = QIcon(coil_icon)
+        
+        # Discrete Input 아이콘 생성
+        discrete_icon = QPixmap(64, 64)
+        discrete_icon.fill(Qt.transparent)
+        painter = QPainter(discrete_icon)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # 초록색 배경
+        painter.setBrush(QColor(40, 140, 40))
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(4, 4, 56, 56, 10, 10)
+        
+        # 디지털 입력 심볼 (스위치 모양)
+        painter.setPen(QPen(QColor(255, 255, 255), 3))
+        painter.drawLine(20, 32, 32, 32)
+        painter.drawLine(32, 32, 44, 20)
+        painter.drawEllipse(16, 30, 4, 4)
+        painter.drawEllipse(44, 18, 4, 4)
+        painter.end()
+        
+        self.dynamic_icons["discrete"] = QIcon(discrete_icon)
+        
+        # Holding Register 아이콘 생성
+        holding_icon = QPixmap(64, 64)
+        holding_icon.fill(Qt.transparent)
+        painter = QPainter(holding_icon)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # 주황색 배경
+        painter.setBrush(QColor(210, 140, 20))
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(4, 4, 56, 56, 10, 10)
+        
+        # 'H' 문자 그리기
+        font = QFont("Arial", 28, QFont.Bold)
+        painter.setFont(font)
+        painter.setPen(QColor(255, 255, 255))
+        painter.drawText(QRect(0, 0, 64, 64), Qt.AlignCenter, "H")
+        painter.end()
+        
+        self.dynamic_icons["holding"] = QIcon(holding_icon)
+        
+        # Input Register 아이콘 생성
+        input_icon = QPixmap(64, 64)
+        input_icon.fill(Qt.transparent)
+        painter = QPainter(input_icon)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # 보라색 배경
+        painter.setBrush(QColor(140, 40, 140))
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(4, 4, 56, 56, 10, 10)
+        
+        # 'I' 문자 그리기
+        font = QFont("Arial", 28, QFont.Bold)
+        painter.setFont(font)
+        painter.setPen(QColor(255, 255, 255))
+        painter.drawText(QRect(0, 0, 64, 64), Qt.AlignCenter, "I")
+        painter.end()
+        
+        self.dynamic_icons["input"] = QIcon(input_icon)
+        
+        print("버튼 아이콘 생성 완료")
             
     def load_stylesheet(self):
         """서버 애플리케이션의 스타일시트 로드
         
-        서버는 어두운 테마(다크 블루)를 사용하여 클라이언트와 시각적으로 구분됩니다.
+        내장된 스타일시트를 직접 적용하여 외부 파일 의존성을 제거합니다.
+        이는 원래 resources/style.qss 파일에 있던 내용이 직접 코드에 포함된 것입니다.
+        """
+        try:
+            # 내장된 QSS 스타일 정의 (원래 style.qss 파일에서 가져온 내용)
+            self.setStyleSheet(EMBEDDED_QSS_STYLE)
+            logger.info("내장된 스타일시트 적용 성공")
+            print("내장된 스타일시트 적용 성공")
+                
+        except Exception as e:
+            logger.error(f"스타일시트 로드 중 오류 발생: {e}")
+            print(f"스타일시트 로드 중 오류 발생: {e}")
+            self._apply_default_style()
+    
+    def _apply_default_style(self):
+        """기본 스타일시트 적용
+        
+        QSS 파일 로드에 실패한 경우 하드코딩된 기본 스타일을 적용합니다.
         """
         self.setStyleSheet("""
             QMainWindow {
@@ -1081,9 +1393,7 @@ class ModbusServerSimulator(QMainWindow):
         self.connect_button.clicked.connect(self.toggle_server)
         self.connect_button.setMinimumWidth(130)
         # 시작 아이콘 추가
-        self.start_icon = QIcon("resources/start_icon.svg")
-        self.stop_icon = QIcon("resources/stop_icon.svg")
-        self.connect_button.setIcon(self.start_icon)
+        self.connect_button.setIcon(self.dynamic_icons["start"])
         self.connect_button.setIconSize(QSize(16, 16))
         conn_layout.addWidget(self.connect_button)
         
@@ -1199,11 +1509,14 @@ class ModbusServerSimulator(QMainWindow):
             "input_registers": "resources/input_icon.svg"
         }.get(register_type, "")
         
+        # icon_type 정의 - register_type과 동일하게 사용
+        icon_type = register_type
+        
         # 아이콘이 있는 제목 생성
         title_layout = QHBoxLayout()
-        if icon_path:
+        if icon_type and icon_type in self.dynamic_icons:
             icon_label = QLabel()
-            icon_label.setPixmap(QIcon(icon_path).pixmap(16, 16))
+            icon_label.setPixmap(self.dynamic_icons[icon_type].pixmap(16, 16))
             title_layout.addWidget(icon_label)
         
         title_label = QLabel(title)
@@ -1250,7 +1563,7 @@ class ModbusServerSimulator(QMainWindow):
             test_button.setMinimumWidth(60)  # 버튼 최소 너비 설정
             test_button.clicked.connect(self.on_test_button_clicked)
             # 테스트 버튼에 아이콘 추가
-            test_button.setIcon(QIcon("resources/holding_icon.svg"))
+            test_button.setIcon(self.dynamic_icons["holding"])
             test_button.setIconSize(QSize(16, 16))
             
             test_layout.addWidget(self.test_input)
@@ -1326,8 +1639,9 @@ class ModbusServerSimulator(QMainWindow):
             if hasattr(self, 'holding_registers_widget'):
                 holding_widget = self.holding_registers_widget
                 try:
-                    hr_values = self.store.getValues(3, 0, register_count)
-                    for addr in range(min(register_count, len(hr_values))):
+                    hr_register_count = 200
+                    hr_values = self.store.getValues(3, 0, hr_register_count)
+                    for addr in range(min(hr_register_count, len(hr_values))):
                         if addr in holding_widget.line_edits:
                             # Skip update if this widget has focus (user is editing)
                             if holding_widget.line_edits[addr].hasFocus():
@@ -1602,10 +1916,13 @@ class ModbusServerSimulator(QMainWindow):
             self.stop_server()
             self.connect_button.setText("Connect")
             self.connect_button.setObjectName("connect_button")
-            self.connect_button.setStyleSheet("")
+            self.connect_button.setIcon(self.dynamic_icons["start"])
         else:
             self.start_server()
             # 버튼 텍스트는 서버가 실제로 시작된 후에 변경됨
+            self.connect_button.setText("Disconnect")
+            self.connect_button.setObjectName("disconnect_button")
+            self.connect_button.setIcon(self.dynamic_icons["stop"])
             
     def start_server(self):
         """Start the Modbus server"""
@@ -1613,8 +1930,30 @@ class ModbusServerSimulator(QMainWindow):
             return
         
         try:
+            import traceback
             address = self.address_edit.text()
             port = int(self.port_edit.text())
+            
+            # 포트 범위 유효성 검사 (1-65535)
+            if port <= 0 or port > 65535:
+                raise ValueError(f"Invalid port number: {port}. Port must be between 1 and 65535.")
+                
+            # 502번 포트는 관리자 권한 필요 알림
+            if port == 502 and os.name == 'nt':  # Windows에서
+                logger.warning("Port 502 typically requires administrator privileges on Windows")
+                print("Port 502 typically requires administrator privileges on Windows")
+                # 관리자 권한 검사 (Windows)
+                try:
+                    import ctypes
+                    is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
+                    if not is_admin:
+                        logger.warning("Not running as administrator - port 502 may fail to bind")
+                        print("Not running as administrator - port 502 may fail to bind")
+                        # 관리자 권한 없이 502 포트 사용 시 경고 메시지 표시
+                        self.status_label.setText("⚠️ Warning: Port 502 may require administrator privileges")
+                        self.status_label.setStyleSheet("color: #FFC107; font-weight: bold;") # 노란색 경고색
+                except Exception as e:
+                    logger.warning(f"Could not check admin status: {e}")
             
             # 홀딩 레지스터 오프셋 값 가져오기
             try:
@@ -1637,6 +1976,14 @@ class ModbusServerSimulator(QMainWindow):
             if hasattr(self, 'holding_registers_widget'):
                 self.holding_registers_widget.set_address_offset(hr_offset)
             
+            # 서버 시작 시도 중임을 표시
+            self.status_label.setText(f"Starting server at {address}:{port}...")
+            self.status_label.setStyleSheet("color: #2196F3; font-weight: bold;")  # 파란색
+            self.statusBar().showMessage("Starting server...")
+            
+            # 애플리케이션 이벤트 처리 업데이트를 위해 잠시 지연
+            QApplication.processEvents()
+            
             # Create and start server thread
             self.server_thread = ModbusServerThread(address, port, self.context, self.signals)
             self.server_thread.start()
@@ -1646,11 +1993,36 @@ class ModbusServerSimulator(QMainWindow):
             print(f"Attempting to start server at {address}:{port} with HR offset {hr_offset}")
         except Exception as e:
             logger.error(f"Failed to start server: {e}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             print(f"Failed to start server: {e}")
-            # Show error in UI
-            self.connect_button.setText("Error")
-            # Reset after 2 seconds
-            QTimer.singleShot(2000, lambda: self.connect_button.setText("Connect"))
+            
+            # 오류 메시지 생성
+            error_msg = str(e)
+            if "Permission denied" in error_msg:
+                if os.name == 'nt' and int(self.port_edit.text()) < 1024:
+                    error_msg = f"Permission denied for port {self.port_edit.text()}. Ports below 1024 often require administrator privileges."
+            elif "already in use" in error_msg:
+                error_msg = f"Port {self.port_edit.text()} is already in use by another application."
+                
+            # 상태 라벨에 오류 표시
+            self.status_label.setText(f"Error: {error_msg}")
+            self.status_label.setStyleSheet("color: #F44336; font-weight: bold;")  # 빨간색
+            
+            # 상태바에도 오류 메시지 표시
+            self.statusBar().showMessage(f"Server start failed: {error_msg}")
+            
+            # Show error on button
+            self.connect_button.setText("Failed")
+            
+            # 서버 실행 상태 초기화
+            self.server_running = False
+            
+            # Reset button after 3 seconds
+            QTimer.singleShot(3000, lambda: {
+                self.connect_button.setText("Connect"),
+                self.connect_button.setIcon(self.dynamic_icons["start"]),
+                self.connect_button.setObjectName("connect_button")
+            })
     
     def stop_server(self):
         """Stop the Modbus server"""
@@ -1758,9 +2130,17 @@ class ModbusServerSimulator(QMainWindow):
         for widget in status_bar_widgets:
             self.statusBar().removeWidget(widget)
             widget.deleteLater()  # 위젯 메모리 해제
-        # 오프라인 아이콘 추가
+        # 오프라인 아이콘 직접 생성 (외부 파일 의존성 제거)
         status_msg = QLabel()
-        status_msg.setPixmap(QIcon("resources/offline_icon.svg").pixmap(12, 12))
+        pixmap = QPixmap(12, 12)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setBrush(QColor(160, 160, 160))  # 회색 배경
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(0, 0, 12, 12)  # 원형 아이콘
+        painter.end()
+        status_msg.setPixmap(pixmap)
         self.statusBar().addWidget(status_msg)
         self.statusBar().showMessage("Server stopped")
         logger.info("Server stopped successfully")
@@ -1870,10 +2250,35 @@ def main():
 Main function"""
     app = QApplication(sys.argv)
     
-    # 애플리케이션 아이콘 설정
-    app_icon = QIcon("resources/app_icon.svg")
+    # 애플리케이션 아이콘 생성 (외부 파일 의존성 제거)
+    # 64x64 크기의 아이콘 생성
+    pixmap = QPixmap(64, 64)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    gradient = QLinearGradient(0, 0, 64, 64)
+    gradient.setColorAt(0, QColor(30, 58, 95))  # 더 어두운 파란색
+    gradient.setColorAt(1, QColor(44, 76, 124))  # 약간 더 밝은 파란색
+    painter.setBrush(QBrush(gradient))
+    painter.setPen(QPen(QColor(58, 94, 140), 2))
+    painter.drawRoundedRect(4, 4, 56, 56, 10, 10)
+    painter.setPen(QPen(QColor(255, 255, 255), 2))  # 흰색 글자
+    painter.setFont(QFont("Arial", 32, QFont.Bold))
+    painter.drawText(pixmap.rect(), Qt.AlignCenter, "M") # M for Modbus
+    painter.end()
+    
+    # 생성된 아이콘 설정
+    app_icon = QIcon(pixmap)
+    app.setWindowIcon(app_icon)
+    
+    # Windows에서 작업 표시줄 아이콘을 설정하기 위한 추가 작업
+    import ctypes
+    if hasattr(ctypes, 'windll'):  # Windows 환경에서만 실행
+        myappid = 'CMES.ModbusTCP.ServerSimulator.1.0'  # 고유 애플리케이션 ID
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
     
     window = ModbusServerSimulator()
+    window.setWindowIcon(app_icon)  # 창 아이콘 설정
     window.show()
     
     logger.info("애플리케이션 실행")
@@ -1881,4 +2286,64 @@ Main function"""
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        # Qt 애플리케이션 생성
+        app = QApplication(sys.argv)
+        app.setApplicationName("Modbus Server Simulator")
+        
+        # PyInstaller 번들링된 EXE에서 실행 중인 경우 처리
+        if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+            logger.info("PyInstaller 번들에서 실행 중입니다.")
+            print("PyInstaller 번들에서 실행 중입니다.")
+            
+            # 워킹 디렉토리 설정
+            # 일부 환경에서는 워킹 디렉토리가 임시 폴더로 설정되어 문제 발생
+            bundle_dir = getattr(sys, '_MEIPASS', os.path.abspath(os.path.dirname(__file__)))
+            os.chdir(bundle_dir)
+            logger.info(f"작업 디렉토리를 번들 디렉토리로 변경: {bundle_dir}")
+            print(f"작업 디렉토리를 번들 디렉토리로 변경: {bundle_dir}")
+        
+        # 내장된 QSS 스타일 설정
+        app.setStyleSheet(EMBEDDED_QSS_STYLE)
+        logger.info("애플리케이션 수준에서 QSS 스타일 적용")
+        print("애플리케이션 수준에서 QSS 스타일 적용")
+        
+        # 애플리케이션 아이콘 생성 및 설정
+        app_icon = QIcon()
+        pixmap = QPixmap(64, 64)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        gradient = QLinearGradient(0, 0, 64, 64)
+        gradient.setColorAt(0, QColor(30, 58, 95))  # 더 어두운 파란색
+        gradient.setColorAt(1, QColor(44, 76, 124))  # 약간 더 밝은 파란색
+        painter.setBrush(QBrush(gradient))
+        painter.setPen(QPen(QColor(58, 94, 140), 2))
+        painter.drawRoundedRect(4, 4, 56, 56, 10, 10)
+        painter.setPen(QPen(QColor(255, 255, 255), 2))  # 흰색 펜
+        painter.setFont(QFont("Arial", 32, QFont.Bold))
+        painter.drawText(pixmap.rect(), Qt.AlignCenter, "S")
+        painter.end()
+        app_icon.addPixmap(pixmap)
+        app.setWindowIcon(app_icon)
+        
+        # 서버 창 생성 - 프로그램 시작 시 한 번만 창을 표시하도록 설정
+        simulator = ModbusServerSimulator()
+        
+        # 명시적으로 메인 윈도우 아이콘 설정
+        simulator.setWindowIcon(app_icon)
+        app.setWindowIcon(app_icon)  # 전체 어플리케이션 아이콘도 설정
+        
+        # 창을 표시하고 이벤트 루프 시작
+        simulator.show()
+        
+        # 이제 어플리케이션 실행 (이벤트 루프 시작)
+        sys.exit(app.exec())
+    except Exception as e:
+        logger.error(f"애플리케이션 실행 중 오류 발생: {e}")
+        print(f"애플리케이션 실행 중 오류 발생: {e}")
+        DEBUG_MODE = True
+        if DEBUG_MODE:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
