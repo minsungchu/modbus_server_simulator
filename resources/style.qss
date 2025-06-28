@@ -1,0 +1,557 @@
+/* Neumorphism Style Sheet for Modbus TCP Server Simulator */
+
+/* 전체 애플리케이션 스타일 */
+QWidget {
+    background-color: #e0e5ec;
+    color: #333;
+    font-family: "Segoe UI", Arial, sans-serif;
+    font-size: 10pt;
+}
+
+/* 타이틀 레이블 스타일 개선 */
+#title_label {
+    color: #2980b9;
+    font-size: 18pt;
+    font-weight: bold;
+    padding: 15px;
+    border-bottom: 2px solid #3498db;
+    margin-bottom: 5px;
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #f0f5fa, stop:1 #e0e5ec);
+    border-radius: 10px;
+}
+
+/* 그룹박스 스타일 */
+QGroupBox {
+    border: 1px solid #bec8d1;
+    border-radius: 15px;
+    margin-top: 1.5em;
+    padding: 15px;
+    background-color: #f0f5fa;
+    /* 뉴모피즘 효과는 코드에서 QGraphicsDropShadowEffect로 적용됨 */
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top center;
+    padding: 0 12px;
+    color: #2980b9;
+    font-weight: bold;
+    font-size: 12pt;
+    background-color: #f0f5fa;
+    border: 1px solid #bec8d1;
+    border-radius: 8px;
+}
+
+/* 레지스터 그룹 스타일 */
+#coils_group {
+    background-color: #fff8f0;
+    border-top: 3px solid #ff8c00;
+}
+
+#discrete_inputs_group {
+    background-color: #ebf5fb;
+    border-top: 3px solid #3498db;
+}
+
+#holding_registers_group {
+    background-color: #f4ecf7;
+    border-top: 3px solid #9b59b6;
+}
+
+#input_registers_group {
+    background-color: #eafaf1;
+    border-top: 3px solid #2ecc71;
+}
+
+/* 연결 설정 그룹 스타일 */
+#connection_group {
+    background-color: #f5f7fa;
+    border-top: 3px solid #34495e;
+    padding: 3px;
+}
+
+/* 스크롤 영역 스타일 */
+QScrollArea {
+    border: none;
+    background-color: transparent;
+    border-radius: 15px;
+}
+
+/* 특정 스크롤 영역 스타일 */
+#coils_scroll, #discrete_inputs_scroll, #holding_registers_scroll, #input_registers_scroll {
+    background-color: #e0e5ec;
+    border-radius: 15px;
+    padding: 5px;
+}
+
+QScrollArea > QWidget > QWidget {
+    background-color: transparent;
+}
+
+/* 스크롤바 스타일 */
+QScrollBar:vertical {
+    border: none;
+    background-color: #f0f5fa;
+    width: 14px;
+    margin: 15px 0 15px 0;
+    border-radius: 7px;
+}
+
+QScrollBar::handle:vertical {
+    background-color: #bec8d1;
+    min-height: 30px;
+    border-radius: 7px;
+    margin: 2px;
+    border: 1px solid #e0e5ec;
+}
+
+QScrollBar::handle:vertical:hover {
+    background-color: #3498db;
+    border: 1px solid #2980b9;
+}
+
+QScrollBar::add-line:vertical {
+    border: none;
+    background-color: #f0f5fa;
+    height: 15px;
+    border-bottom-left-radius: 7px;
+    border-bottom-right-radius: 7px;
+    subcontrol-position: bottom;
+    subcontrol-origin: margin;
+}
+
+QScrollBar::sub-line:vertical {
+    border: none;
+    background-color: #f0f5fa;
+    height: 15px;
+    border-top-left-radius: 7px;
+    border-top-right-radius: 7px;
+    subcontrol-position: top;
+    subcontrol-origin: margin;
+}
+
+QScrollBar::up-arrow:vertical, QScrollBar::down-arrow:vertical {
+    background: none;
+}
+
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+    background: none;
+}
+
+QScrollBar:horizontal {
+    border: none;
+    background-color: #e0e5ec;
+    height: 12px;
+    margin: 0px;
+    border-radius: 6px;
+}
+
+QScrollBar::handle:horizontal {
+    background: #c0cad8;
+    min-width: 30px;
+    border-radius: 6px;
+}
+
+QScrollBar::handle:horizontal:hover {
+    background: #a8b5c5;
+}
+
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    border: none;
+    background: none;
+    width: 0px;
+}
+
+/* 버튼 스타일 */
+QPushButton {
+    background-color: #f0f5fa;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 12px;
+    color: #3498db;
+    font-weight: bold;
+    /* 뉴모피즘 효과는 코드에서 QGraphicsDropShadowEffect로 적용됨 */
+}
+
+QPushButton:hover {
+    background-color: #e5eef7;
+    color: #2980b9;
+}
+
+QPushButton:pressed {
+    background-color: #e0e5ec;
+    /* 뉴모피즘 효과는 코드에서 QGraphicsDropShadowEffect로 적용됨 */
+    padding: 11px 21px 9px 19px; /* 눌렸을 때 약간 이동하는 효과 */
+}
+
+QPushButton:disabled {
+    color: #95a5a6;
+    background-color: #e0e5ec;
+    /* 효과 없음 */
+}
+
+/* 연결 버튼 특별 스타일 */
+#connect_button {
+    color: #27ae60;
+    font-weight: bold;
+    background-color: #eafaf1;
+    border-bottom: 2px solid #27ae60;
+}
+
+#connect_button:hover {
+    color: #219653;
+    background-color: #d5f5e3;
+}
+
+#connect_button:pressed {
+    color: #1e8449;
+    background-color: #c8f0d9;
+}
+
+/* 연결 해제 버튼 특별 스타일 */
+#disconnect_button {
+    color: #e74c3c;
+    font-weight: bold;
+    background-color: #fdedec;
+    border-bottom: 2px solid #e74c3c;
+}
+
+#disconnect_button:hover {
+    color: #c0392b;
+    background-color: #f9e4e3;
+}
+
+#disconnect_button:pressed {
+    color: #a93226;
+    background-color: #f5d8d5;
+}
+
+/* 테스트 버튼 특별 스타일 */
+#test_button {
+    color: #3498db;
+    font-weight: bold;
+    background-color: #ebf5fb;
+    border-bottom: 2px solid #3498db;
+}
+
+#test_button:hover {
+    color: #2980b9;
+    background-color: #d6eaf8;
+}
+
+#test_button:pressed {
+    color: #2573a7;
+    background-color: #c1ddf6;
+}
+
+/* 서버 버튼 특별 스타일 */
+#server_button {
+    color: #f39c12;
+    font-weight: bold;
+    background-color: #fef5e7;
+    border-bottom: 2px solid #f39c12;
+}
+
+#server_button:hover {
+    color: #d35400;
+    background-color: #fdebd0;
+}
+
+#server_button:pressed {
+    color: #ba4a00;
+    background-color: #fae5d3;
+}
+
+/* 입력 필드 스타일 */
+QLineEdit, QSpinBox {
+    background-color: #f5f7fa;
+    border: 1px solid #bec8d1;
+    border-radius: 10px;
+    padding: 8px;
+    color: #2d3436;
+    /* 뉴모피즘 효과는 코드에서 QGraphicsDropShadowEffect로 적용됨 */
+}
+
+QLineEdit:focus, QSpinBox:focus {
+    border: 2px solid #3498db;
+    background-color: #ffffff;
+    /* 뉴모피즘 효과는 코드에서 QGraphicsDropShadowEffect로 적용됨 */
+}
+
+/* 레지스터 입력창 특별 스타일 */
+#register_\d+ {
+    border: 1px solid #bec8d1;
+    background-color: #e0e5ec;
+}
+
+#register_\d+:focus {
+    border: 2px solid #3498db;
+}
+
+/* 체크박스 스타일 */
+QCheckBox {
+    spacing: 10px;
+    color: #2c3e50;
+    font-weight: 500;
+}
+
+QCheckBox::indicator {
+    width: 22px;
+    height: 22px;
+    border-radius: 6px;
+    border: 1px solid #bec8d1;
+    background-color: #f5f7fa;
+    /* 뉴모피즘 효과는 코드에서 QGraphicsDropShadowEffect로 적용됨 */
+}
+
+QCheckBox::indicator:unchecked:hover {
+    background-color: #e8f0fe;
+    border: 1px solid #a3c5fd;
+}
+
+QCheckBox::indicator:checked {
+    background-color: #ff8c00; /* 주황색 배경 */
+    image: url(resources/check.svg);
+    border: 1px solid #d67600; /* 진한 주황색 테두리 */
+    /* 뉴모피즘 효과는 코드에서 QGraphicsDropShadowEffect로 적용됨 */
+}
+
+QCheckBox::indicator:checked:hover {
+    background-color: #ff9f22; /* 더 밝은 주황색 */
+    /* 뉴모피즘 효과는 코드에서 QGraphicsDropShadowEffect로 적용됨 */
+}
+
+/* 콤보박스 스타일 */
+QComboBox {
+    border: 1px solid #bec8d1;
+    padding: 10px;
+    border-radius: 10px;
+    background-color: #f5f7fa;
+    min-width: 8em;
+    color: #2c3e50;
+    font-weight: 500;
+    /* 뉴모피즘 효과는 코드에서 QGraphicsDropShadowEffect로 적용됨 */
+}
+
+QComboBox:hover {
+    background-color: #e8f0fe;
+    border: 1px solid #a3c5fd;
+}
+
+QComboBox:on {
+    background-color: #e8f0fe;
+    border: 1px solid #3498db;
+}
+
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 30px;
+    border: none;
+    border-left: 1px solid #bec8d1;
+    border-top-right-radius: 9px;
+    border-bottom-right-radius: 9px;
+}
+
+QComboBox::down-arrow {
+    image: url(resources/dropdown_arrow.svg);
+    width: 14px;
+    height: 14px;
+}
+
+QComboBox QAbstractItemView {
+    border: 1px solid #bec8d1;
+    border-radius: 10px;
+    background-color: #f5f7fa;
+    selection-background-color: #3498db;
+    selection-color: white;
+    padding: 8px;
+    margin-top: 5px;
+    /* 그림자 효과는 코드에서 QGraphicsDropShadowEffect로 적용됨 */
+}
+
+/* 라벨 스타일 */
+QLabel {
+    color: #2c3e50;
+    font-weight: 500;
+    padding: 5px;
+}
+
+/* 그룹 헤더 라벨 스타일 */
+QLabel[groupHeader="true"] {
+    color: #2980b9;
+    font-weight: bold;
+    font-size: 11pt;
+    border-bottom: 1px solid #bec8d1;
+    padding-bottom: 8px;
+    margin-bottom: 10px;
+}
+
+/* 상태 라벨 스타일 */
+QLabel[statusLabel="true"] {
+    font-weight: bold;
+    border-radius: 8px;
+    padding: 5px 10px;
+}
+
+/* 온라인 상태 라벨 */
+QLabel[status="online"] {
+    color: #27ae60;
+    background-color: #eafaf1;
+    border: 1px solid #27ae60;
+}
+
+/* 오프라인 상태 라벨 */
+QLabel[status="offline"] {
+    color: #e74c3c;
+    background-color: #fdedec;
+    border: 1px solid #e74c3c;
+}
+
+/* 테이블 스타일 */
+QTableWidget {
+    border: none;
+    background-color: #e0e5ec;
+    gridline-color: #bec8d1;
+    border-radius: 12px;
+    padding: 5px;
+}
+
+QTableWidget::item {
+    padding: 8px;
+    border-radius: 6px;
+}
+
+QTableWidget::item:selected {
+    background-color: #3498db;
+    color: white;
+}
+
+QHeaderView::section {
+    background-color: #e0e5ec;
+    padding: 8px;
+    border: 1px solid #bec8d1;
+    font-weight: bold;
+    color: #3498db;
+    border-radius: 6px;
+}
+
+QTableCornerButton::section {
+    background-color: #e0e5ec;
+    border: 1px solid #bec8d1;
+}
+
+/* 슬라이더 스타일 */
+QSlider::groove:horizontal {
+    border: none;
+    height: 10px;
+    background-color: #e0e5ec;
+    border-radius: 5px;
+}
+
+QSlider::handle:horizontal {
+    background-color: #e0e5ec;
+    border: none;
+    width: 20px;
+    height: 20px;
+    margin: -5px 0;
+    border-radius: 10px;
+}
+
+/* 상태바 스타일 */
+QStatusBar {
+    background-color: #f0f5fa;
+    color: #2c3e50;
+    border-top: 1px solid #bec8d1;
+    padding: 5px;
+    font-weight: 500;
+}
+
+QStatusBar::item {
+    border: none;
+    margin-right: 5px;
+}
+
+/* 상태바 메시지 스타일 */
+QStatusBar QLabel {
+    padding: 3px 10px;
+    border-radius: 5px;
+}
+
+/* 상태바 성공 메시지 */
+QStatusBar QLabel[status="success"] {
+    background-color: #eafaf1;
+    color: #27ae60;
+    border: 1px solid #27ae60;
+}
+
+/* 상태바 오류 메시지 */
+QStatusBar QLabel[status="error"] {
+    background-color: #fdedec;
+    color: #e74c3c;
+    border: 1px solid #e74c3c;
+}
+
+/* 상태바 정보 메시지 */
+QStatusBar QLabel[status="info"] {
+    background-color: #ebf5fb;
+    color: #3498db;
+    border: 1px solid #3498db;
+    background-color: #e0e5ec;
+}
+
+/* 메인 윈도우 내부 위젯 */
+QMainWindow::separator {
+    background-color: #e0e5ec;
+    width: 1px;
+    height: 1px;
+}
+
+/* 탭 위젯 스타일 */
+QTabWidget::pane {
+    border: none;
+    border-radius: 15px;
+    background-color: #e0e5ec;
+}
+
+QTabBar::tab {
+    background-color: #e0e5ec;
+    color: #2d3436;
+    border: none;
+    border-radius: 10px;
+    padding: 8px 15px;
+    margin: 2px;
+}
+
+QTabBar::tab:selected {
+    background-color: #e0e5ec;
+    color: #2d3436;
+}
+
+/* 토글 버튼 스타일 - Neumorphism */
+QRadioButton {
+    color: #2d3436;
+    spacing: 8px;
+}
+
+QRadioButton::indicator {
+    width: 20px;
+    height: 20px;
+    border-radius: 10px;
+    border: none;
+    background-color: #e0e5ec;
+}
+
+QRadioButton::indicator:checked {
+    background-color: #e0e5ec;
+}
+
+QRadioButton::indicator:checked::before {
+    content: "";
+    display: block;
+    width: 10px;
+    height: 10px;
+    border-radius: 5px;
+    background-color: #3498db;
+    margin: 5px;
+}
