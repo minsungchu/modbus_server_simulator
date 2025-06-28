@@ -48,6 +48,7 @@ def StopServer():
     loop = asyncio.get_event_loop()
     if loop.is_running():
         logger.info("이벤트 루프 중지 요청")
+        print("이벤트 루프 중지 요청")
         loop.stop()
 
 # 만약 ModbusSocketFramer가 없으면 None으로 설정 (버전 호환성)
@@ -55,10 +56,11 @@ try:
     ModbusSocketFramer
 except NameError:
     logger.warning("ModbusSocketFramer를 찾을 수 없습니다. None으로 설정합니다.")
+    print("ModbusSocketFramer를 찾을 수 없습니다. None으로 설정합니다.")
     ModbusSocketFramer = None
 
 # 로깅 설정
-logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
+logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.DEBUG)
 logger = logging.getLogger("ModbusServerSim")
 
 # 파일 핸들러 추가
@@ -85,14 +87,16 @@ class CustomModbusSlaveContext(ModbusSlaveContext):
     
     클라이언트의 읽기/쓰기 작업을 감지하고 로깅하며, UI 업데이트를 위한 시그널을 발생시킵니다.
     """
-    def __init__(self, signals, *args, **kwargs):
+    def __init__(self, signals=None, *args, hr_offset=0, **kwargs):
         super().__init__(*args, **kwargs)
-        self.signals = signals
+        self.signals = signals if signals is not None else ModbusSignals()
         self.last_write_source = None
-        logger.info("커스텀 ModbusSlaveContext 초기화 완료")
+        self.hr_offset = hr_offset  # 홀딩 레지스터 오프셋 값 설정
+        logger.info(f"커스텀 ModbusSlaveContext 초기화 완료 - HR 오프셋: {self.hr_offset}")
+        print(f"커스텀 ModbusSlaveContext 초기화 완료 - HR 오프셋: {self.hr_offset}")
         
     def getValues(self, fx, address, count=1):
-        """Override getValues to log client read operations"""
+        """Override getValues to log client read operations and apply offset for holding registers"""
         try:
             # Get the current call stack to determine if this is from UI or external client
             import traceback
@@ -101,6 +105,7 @@ class CustomModbusSlaveContext(ModbusSlaveContext):
             
             # 디버깅을 위한 추가 로그
             logger.debug(f"getValues called: fx={fx}, address={address}, count={count}, caller={caller}")
+            # print(f"getValues called: fx={fx}, address={address}, count={count}, caller={caller}")
             
             # 함수 코드 매핑 (디버깅 용)
             function_code_map = {
@@ -112,20 +117,80 @@ class CustomModbusSlaveContext(ModbusSlaveContext):
             fc_name = function_code_map.get(fx, f"Unknown({fx})")
             logger.debug(f"Function code: {fc_name}")
             
-            # Call the parent method to get the values
-            values = super().getValues(fx, address, count)
+            # 홀딩 레지스터(fx=3)인 경우 오프셋 적용
+            actual_address = address
+            logger.info(f"[getValues] 함수 코드: {fx}, 요청 주소: {address}, HR 오프셋: {self.hr_offset}")
+            
+            # Get the current call stack to determine if this is from UI or external client
+            import traceback
+            stack = traceback.extract_stack()
+            caller = stack[-2].name if len(stack) >= 2 else "unknown"
+            is_ui_request = caller in ["update_ui_from_context", "update_context_from_ui"]
+            
+            # 홀딩 레지스터 관련 함수 코드(3, 6, 16)인 경우 오프셋 적용
+            # fx=3: Read Holding Registers, fx=6: Write Single Register, fx=16: Write Multiple Registers
+            if fx in [3, 6, 16]:  # 홀딩 레지스터 관련 함수 코드인 경우
+                if self.hr_offset > 0 and not is_ui_request:  # 오프셋이 있고 UI에서의 요청이 아닌 경우에만 적용
+                    # 클라이언트가 요청한 주소에서 오프셋을 빼서 실제 데이터 저장소 주소를 계산
+                    # 예: 클라이언트가 10을 요청하면 실제로는 0번 데이터를 반환해야 함 (10-10=0)
+                    
+                    # 클라이언트 주소가 오프셋보다 작은 경우 유효하지 않은 주소
+                    if address < self.hr_offset:
+                        logger.warning(f"[getValues] 유효하지 않은 주소 요청: 클라이언트 주소={address}, 오프셋={self.hr_offset}, 0 값 반환")
+                        print(f"[DEBUG] 유효하지 않은 주소 요청: 클라이언트 주소={address}, 오프셋={self.hr_offset}, 0 값 반환")
+                        return [0] * count
+                        
+                    actual_address = address - self.hr_offset
+                    logger.info(f"[getValues] 홀딩 레지스터 오프셋 적용: 클라이언트 요청 주소={address}, 실제 주소={actual_address}, 오프셋={self.hr_offset}")
+                    print(f"[DEBUG] 홀딩 레지스터 오프셋 적용: 클라이언트 요청 주소={address}, 실제 주소={actual_address}, 오프셋={self.hr_offset}")
+                elif self.hr_offset > 0 and is_ui_request:
+                    # UI에서의 요청은 오프셋 검증을 건너뛰고 주소 그대로 사용
+                    # logger.info(f"[getValues] UI 요청 - 오프셋 검증 건너뛰기: 주소={address}, 오프셋={self.hr_offset}")
+                    # print(f"[DEBUG] UI 요청 - 오프셋 검증 건너뛰기: 주소={address}, 오프셋={self.hr_offset}")
+                    actual_address = address
+                    
+                    # 유효한 주소 범위를 벗어나는지 확인
+                    # 동적으로 할당된 데이터 저장소 크기를 고려하여 검증
+                    hr_size = 200
+                    if hasattr(self, '_blocks') and hasattr(self._blocks[3], 'values'):
+                        hr_size = len(self._blocks[3].values)
+                    
+                    if actual_address >= hr_size:  # 동적으로 할당된 홀딩 레지스터 범위 검증
+                        logger.warning(f"[getValues] 오프셋 적용 후 유효하지 않은 주소: {actual_address}, 데이터 저장소 크기: {hr_size}, 0 값 반환")
+                        print(f"[getValues] 오프셋 적용 후 유효하지 않은 주소: {actual_address}, 데이터 저장소 크기: {hr_size}, 0 값 반환")
+                        return [0] * count
+                else:
+                    # logger.info(f"[getValues] 홀딩 레지스터지만 오프셋이 0이므로 적용하지 않음")
+                    # print(f"[getValues] 홀딩 레지스터지만 오프셋이 0이므로 적용하지 않음")
+                    pass
+            
+            # Call the parent method to get the values with adjusted address
+            values = super().getValues(fx, actual_address, count)
             
             # 값 로깅 (디버깅 용)
             logger.debug(f"Retrieved values: {values}")
+            # print(f"Retrieved values: {values}")
             
             # Log external client reads (not from our own UI)
             if caller not in ["update_ui_from_context", "update_context_from_ui"]:
-                logger.info(f"External client read detected: FC={fx}({fc_name}), Address={address}, Count={count}, Values={values}")
+                if fx == 3 and self.hr_offset > 0:
+                    logger.info(f"External client read detected: FC={fx}({fc_name}), Client Address={address}, Actual Address={actual_address}, Count={count}, Values={values}")
+                    print(f"[DEBUG] External client read detected: FC={fx}({fc_name}), Client Address={address}, Actual Address={actual_address}, Count={count}, Values={values}, HR Offset={self.hr_offset}")
+                    
+                    # 추가 디버깅: 내부 데이터 저장소 값 확인
+                    if hasattr(self, '_blocks') and hasattr(self._blocks[3], 'values'):
+                        internal_values = [self._blocks[3].values.get(i, 0) for i in range(10)]
+                        print(f"[DEBUG] Internal data store first 10 values: {internal_values}")
+                else:
+                    logger.info(f"External client read detected: FC={fx}({fc_name}), Address={address}, Count={count}, Values={values}")
+                    print(f"External client read detected: FC={fx}({fc_name}), Address={address}, Count={count}, Values={values}")
                 
             return values
         except Exception as e:
             logger.error(f"Error in getValues: {e}")
+            print(f"Error in getValues: {e}")
             logger.error(f"Error traceback: {traceback.format_exc()}")
+            print(f"Error traceback: {traceback.format_exc()}")
             # Return default values in case of error to avoid breaking client reads
             if fx in [1, 2]:  # Coils and Discrete Inputs
                 return [0] * count
@@ -133,25 +198,117 @@ class CustomModbusSlaveContext(ModbusSlaveContext):
                 return [0] * count
     
     def setValues(self, fx, address, values):
-        """Override setValues to detect external writes"""
+        """Override setValues to detect external writes and apply offset for holding registers"""
         # Get the current call stack to determine if this is from UI or external client
         import traceback
         stack = traceback.extract_stack()
         caller = stack[-2].name if len(stack) >= 2 else "unknown"
         
         try:
-            # Call the parent method to set the values
-            super().setValues(fx, address, values)
+            # 기본적으로 요청 주소를 그대로 사용
+            actual_address = address
+            
+            # 디버깅을 위한 추가 로그 (상세)
+            logger.info(f"[setValues 시작] 함수 코드: {fx}, 요청 주소: {address}, HR 오프셋: {self.hr_offset}, 값: {values}, 호출자: {caller}")
+            # print(f"[DEBUG] [setValues 시작] 함수 코드: {fx}, 요청 주소: {address}, HR 오프셋: {self.hr_offset}, 값: {values}, 호출자: {caller}")
+            
+            # UI 요청인지 확인 - 좀 더 구체적인 조건 정의
+            is_ui_request = caller in ["update_ui_from_context", "update_context_from_ui", "on_register_value_changed"]
+            logger.info(f"[setValues] UI 요청 여부: {is_ui_request}, 호출자: {caller}")
+            # print(f"[DEBUG] [setValues] UI 요청 여부: {is_ui_request}, 호출자: {caller}")
+            
+            # 함수 코드 매핑 (디버깅 용)
+            function_code_map = {
+                5: "Write Single Coil",
+                6: "Write Single Register",
+                15: "Write Multiple Coils",
+                16: "Write Multiple Registers"
+            }
+            fc_name = function_code_map.get(fx, f"Unknown({fx})")
+            logger.info(f"[setValues] 함수 코드: {fx} ({fc_name})")
+            # print(f"[DEBUG] [setValues] 함수 코드: {fx} ({fc_name})")
+            
+            # 내부 데이터 저장소 접근 전/후 값 확인 (디버깅용)
+            if hasattr(self, '_blocks') and hasattr(self._blocks[fx], 'values'):
+                old_values = {}
+                if address < len(self._blocks[fx].values):
+                    for i in range(len(values)):
+                        if address + i < len(self._blocks[fx].values):
+                            old_values[address + i] = self._blocks[fx].values.get(address + i, 0)
+                logger.info(f"[setValues] 변경 전 데이터 저장소 값: {old_values}")
+                # print(f"[DEBUG] [setValues] 변경 전 데이터 저장소 값: {old_values}")
+            
+            # 홀딩 레지스터 관련 함수 코드(3, 6, 16)인 경우 오프셋 적용
+            # fx=3: Read Holding Registers, fx=6: Write Single Register, fx=16: Write Multiple Registers
+            if fx in [3, 6, 16]:  # 홀딩 레지스터 관련 함수 코드인 경우
+                if self.hr_offset > 0 and not is_ui_request:  # 오프셋이 있고 UI에서의 요청이 아닌 경우에만 적용
+                    # 클라이언트가 요청한 주소에서 오프셋을 빼서 실제 데이터 저장소 주소를 계산
+                    # 예: 클라이언트가 10을 요청하면 실제로는 0번 데이터를 저장해야 함 (10-10=0)
+                    
+                    # 클라이언트 주소가 오프셋보다 작은 경우 유효하지 않은 주소
+                    if address < self.hr_offset:
+                        logger.warning(f"[setValues] 유효하지 않은 주소 요청: 클라이언트 주소={address}, 오프셋={self.hr_offset}, 쓰기 무시")
+                        print(f"[DEBUG] [setValues] 유효하지 않은 주소 요청: 클라이언트 주소={address}, 오프셋={self.hr_offset}, 쓰기 무시")
+                        return
+                        
+                    actual_address = address - self.hr_offset
+                    logger.info(f"[setValues] 홀딩 레지스터 오프셋 적용: 클라이언트 요청 주소={address}, 실제 주소={actual_address}, 오프셋={self.hr_offset}")
+                    # print(f"[DEBUG] [setValues] 홀딩 레지스터 오프셋 적용: 클라이언트 요청 주소={address}, 실제 주소={actual_address}, 오프셋={self.hr_offset}")
+                elif self.hr_offset > 0 and is_ui_request:
+                    # UI에서의 요청은 오프셋 검증을 건너뛰고 주소 그대로 사용
+                    logger.info(f"[setValues] UI 요청 - 오프셋 검증 건너뛰기: 주소={address}, 오프셋={self.hr_offset}")
+                    # print(f"[DEBUG] [setValues] UI 요청 - 오프셋 검증 건너뛰기: 주소={address}, 오프셋={self.hr_offset}")
+                    actual_address = address
+                    
+                    # 유효한 주소 범위를 벗어나는지 확인
+                    # 동적으로 할당된 데이터 저장소 크기를 고려하여 검증
+                    hr_size = 200
+                    if hasattr(self, '_blocks') and hasattr(self._blocks[3], 'values'):
+                        hr_size = len(self._blocks[3].values)
+                    
+                    if actual_address >= hr_size:  # 동적으로 할당된 홀딩 레지스터 범위 검증
+                        logger.warning(f"[setValues] 오프셋 적용 후 유효하지 않은 주소: {actual_address}, 데이터 저장소 크기: {hr_size}, 쓰기 무시")
+                        # print(f"[DEBUG] [setValues] 오프셋 적용 후 유효하지 않은 주소: {actual_address}, 데이터 저장소 크기: {hr_size}, 쓰기 무시")
+                        return
+                else:
+                    logger.info(f"[setValues] 홀딩 레지스터지만 오프셋이 0이므로 적용하지 않음")
+                    # print(f"[DEBUG] [setValues] 홀딩 레지스터지만 오프셋이 0이므로 적용하지 않음")
+            
+            # Call the parent method to set the values with adjusted address
+            logger.info(f"[setValues] 실제 값 저장 전 - 함수 코드: {fx}, 계산된 주소: {actual_address}, 값: {values}")
+            # print(f"[DEBUG] [setValues] 실제 값 저장 전 - 함수 코드: {fx}, 계산된 주소: {actual_address}, 값: {values}")
+            
+            super().setValues(fx, actual_address, values)
+            
+            # 값 저장 후 디버깅 - 실제로 값이 저장되었는지 확인
+            if hasattr(self, '_blocks') and hasattr(self._blocks[fx], 'values'):
+                new_values = {}
+                for i in range(len(values)):
+                    if actual_address + i < len(self._blocks[fx].values):
+                        new_values[actual_address + i] = self._blocks[fx].values.get(actual_address + i, 0)
+                logger.info(f"[setValues] 변경 후 데이터 저장소 값: {new_values}")
+                print(f"[DEBUG] [setValues] 변경 후 데이터 저장소 값: {new_values}")
             
             # Only emit signals for external client writes (not from our own UI)
             if caller not in ["on_register_value_changed", "update_context_from_ui"]:
                 # This is likely an external client write
                 for i, value in enumerate(values):
-                    logger.info(f"External client write detected: FC={fx}, Address={address+i}, Value={value}")
-                    # Emit signal to notify UI
-                    self.signals.client_write_detected.emit(fx, address+i, value)
+                    if fx in [3, 6, 16] and self.hr_offset > 0:  # 홀딩 레지스터 관련 함수 코드
+                        # 외부 클라이언트 쓰기 감지 시 오프셋 적용된 주소 정보 로깅
+                        logger.info(f"External client write detected: FC={fx}, Client Address={address+i}, Actual Address={actual_address+i}, Value={value}, Offset={self.hr_offset}")
+                        print(f"[DEBUG] External client write detected: FC={fx}, Client Address={address+i}, Actual Address={actual_address+i}, Value={value}, Offset={self.hr_offset}")
+                        # UI에 클라이언트 주소 그대로 전달 (오프셋이 적용된 주소)
+                        self.signals.client_write_detected.emit(fx, address+i, value)
+                    else:
+                        logger.info(f"External client write detected: FC={fx}, Address={address+i}, Value={value}")
+                        print(f"[DEBUG] External client write detected: FC={fx}, Address={address+i}, Value={value}")
+                        # Emit signal to notify UI
+                        self.signals.client_write_detected.emit(fx, address+i, value)
         except Exception as e:
             logger.error(f"Error in setValues: {e}")
+            logger.error(f"Error traceback: {traceback.format_exc()}")
+            print(f"[DEBUG] Error in setValues: {e}")
+            print(f"[DEBUG] Error traceback: {traceback.format_exc()}")
 
 
 class ModbusServerThread(QThread):
@@ -173,12 +330,14 @@ class ModbusServerThread(QThread):
         self._stop_requested = False
         
         logger.info(f"ModbusServerThread 초기화: {address}:{port}")
+        print(f"ModbusServerThread 초기화: {address}:{port}")
 
     def run(self):
         try:
             self.running = True
             self._stop_requested = False
             logger.info(f"Starting Modbus server on {self.address}:{self.port}")
+            print(f"Starting Modbus server on {self.address}:{self.port}")
             
             # Create a custom identity for the server
             identity = ModbusDeviceIdentification()
@@ -206,21 +365,25 @@ class ModbusServerThread(QThread):
                 )
             except Exception as e:
                 logger.error(f"Error starting Modbus server: {e}")
+                print(f"Error starting Modbus server: {e}")
                 raise
                 
         except Exception as e:
             logger.error(f"Error starting Modbus server: {e}")
+            print(f"Error starting Modbus server: {e}")
         finally:
             self.running = False
             self._server_started = False
             self.signals.server_stopped.emit()
             logger.info("Server stopped")
+            print("Server stopped")
 
     def stop(self):
         # 서버 종료 방법
         if self.running and self._server_started:
             try:
                 logger.info("Stopping Modbus server...")
+                print("Stopping Modbus server...")
                 
                 # 종료 플래그 설정
                 self._stop_requested = True
@@ -232,8 +395,10 @@ class ModbusServerThread(QThread):
                     # StopServer 함수 호출
                     StopServer()
                     logger.info("Server stopped using StopServer function")
+                    print("Server stopped using StopServer function")
                 except Exception as e:
                     logger.warning(f"Error using StopServer: {e}")
+                    print(f"Error using StopServer: {e}")
                 
                 # 소켓 연결을 통해 서버 종료 시도 (백업 방법)
                 import socket
@@ -245,6 +410,7 @@ class ModbusServerThread(QThread):
                     sock.send(b'\x00')
                 except Exception as e:
                     logger.debug(f"Socket connection for shutdown: {e}")
+                    print(f"Socket connection for shutdown: {e}")
                 finally:
                     try:
                         sock.close()
@@ -258,8 +424,10 @@ class ModbusServerThread(QThread):
                 # 시그널 전송
                 self.signals.server_stopped.emit()
                 logger.info("Modbus server stopped successfully")
+                print("Modbus server stopped successfully")
             except Exception as e:
                 logger.error(f"Error stopping server: {e}")
+                print(f"Error stopping server: {e}")
                 # 에러가 발생해도 시그널은 보내서 UI가 업데이트되도록 함
                 self.signals.server_stopped.emit()
 
@@ -288,6 +456,8 @@ class RegisterWidget(QWidget):
         self.checkboxes = {}
         self.line_edits = {}
         self.memo_edits = {}  # 메모 텍스트 필드 저장용
+        self.address_labels = {}  # 주소 라벨 저장용
+        self.offset = 0  # 홀딩 레지스터 주소 오프셋 초기값
         
         self.init_ui()
         
@@ -339,9 +509,10 @@ class RegisterWidget(QWidget):
             # 첫 번째 컬럼 레지스터 (0-99)
             for i in range(100):
                 # 주소 레이블
-                address_label = QLabel(str(i))
+                address_label = QLabel(str(i + self.offset))
                 address_label.setStyleSheet("padding: 0px;")
                 left_layout.addWidget(address_label, i+1, 0)
+                self.address_labels[i] = address_label
                 
                 # 값 입력 필드
                 line_edit = self.create_register_widget(i)
@@ -362,9 +533,10 @@ class RegisterWidget(QWidget):
             # 두 번째 컬럼 레지스터 (100-199)
             for i in range(100, 200):
                 # 주소 레이블
-                address_label = QLabel(str(i))
+                address_label = QLabel(str(i + self.offset))
                 address_label.setStyleSheet("padding: 0px;")
                 right_layout.addWidget(address_label, i-99, 0)  # i-99로 인덱스 조정
+                self.address_labels[i] = address_label
                 
                 # 값 입력 필드
                 line_edit = self.create_register_widget(i)
@@ -479,6 +651,7 @@ class RegisterWidget(QWidget):
     def on_bit_changed(self, addr, state):
         # 디버깅을 위해 실제 상태 값 출력
         logger.info(f"Raw checkbox state: {state}, type: {type(state)}, Qt.Checked: {Qt.CheckState.Checked}")
+        print(f"Raw checkbox state: {state}, type: {type(state)}, Qt.Checked: {Qt.CheckState.Checked}")
         
         # 체크박스 상태 확인 - isChecked() 사용
         is_checked = self.checkboxes[addr].isChecked()
@@ -486,6 +659,7 @@ class RegisterWidget(QWidget):
         
         self.values[addr] = value
         logger.info(f"Bit changed: {self.register_type}[{addr}] = {value}, checkbox is checked: {is_checked}")
+        print(f"Bit changed: {self.register_type}[{addr}] = {value}, checkbox is checked: {is_checked}")
         # 값 변경 시그널 발생
         self.value_changed.emit(self.register_type, addr, value)
     
@@ -510,6 +684,7 @@ class RegisterWidget(QWidget):
             # Update the display with formatted hex
             self.line_edits[addr].setText(f"{value:X}")
             logger.info(f"Register changed: {self.register_type}[{addr}] = {value}")
+            print(f"Register changed: {self.register_type}[{addr}] = {value}")
             
             # 값 변경 시그널 발생
             self.value_changed.emit(self.register_type, addr, value)
@@ -550,11 +725,13 @@ class RegisterWidget(QWidget):
             self.line_edits[addr].blockSignals(old_state)
             
             logger.info(f"Register changed: {self.register_type}[{addr}] = {text} (int: {value})")
+            print(f"Register changed: {self.register_type}[{addr}] = {text} (int: {value})")
             
             # 값 변경 시그널 발생
             self.value_changed.emit(self.register_type, addr, value)
         except ValueError as e:
             logger.error(f"Error in on_value_changed: {e}")
+            print(f"Error in on_value_changed: {e}")
             # Reset to previous value on error
             if addr in self.values:
                 self.line_edits[addr].setText(self.values[addr])
@@ -568,6 +745,7 @@ class RegisterWidget(QWidget):
         if self.register_type == "holding_registers":
             self.memo_changed.emit(self.register_type, addr, text)
             logger.debug(f"Memo changed: {self.register_type}[{addr}] = {text}")
+            print(f"Memo changed: {self.register_type}[{addr}] = {text}")
     
     def update_value(self, addr, value):
         """Update a register value from the server"""
@@ -594,6 +772,25 @@ class RegisterWidget(QWidget):
                 self.values[addr] = hex_value
                 
                 logger.debug(f"Updated {self.register_type}[{addr}] to {hex_value} from server")
+                print(f"Updated {self.register_type}[{addr}] to {hex_value} from server")
+                
+    def set_address_offset(self, offset):
+        """홀딩 레지스터 주소 오프셋을 설정하고 주소 라벨을 업데이트합니다.
+        
+        Args:
+            offset (int): 적용할 주소 오프셋 값
+        """
+        if self.register_type != "holding_registers":
+            return  # 홀딩 레지스터가 아니면 아무 작업도 하지 않음
+            
+        self.offset = offset
+        
+        # 모든 주소 라벨 업데이트
+        for addr, label in self.address_labels.items():
+            label.setText(str(addr + offset))
+            
+        logger.info(f"홀딩 레지스터 주소 오프셋 {offset} 적용 완료")
+        print(f"홀딩 레지스터 주소 오프셋 {offset} 적용 완료")
 
 
 class ModbusServerSimulator(QMainWindow):
@@ -679,6 +876,7 @@ class ModbusServerSimulator(QMainWindow):
         self.setWindowIcon(icon)
         
         logger.info("서버 아이콘 생성 및 설정 완료")
+        print("서버 아이콘 생성 및 설정 완료")
         
         # 아이콘 파일로 저장 (선택적)
         try:
@@ -686,8 +884,10 @@ class ModbusServerSimulator(QMainWindow):
                 os.makedirs("resources")
             pixmap.save("resources/server_icon.png")
             logger.info("서버 아이콘 파일 저장 완료: resources/server_icon.png")
+            print("서버 아이콘 파일 저장 완료: resources/server_icon.png")
         except Exception as e:
             logger.warning(f"아이콘 파일 저장 실패: {e}")
+            print(f"아이콘 파일 저장 실패: {e}")
             # 아이콘 저장 실패는 중요한 오류가 아니므로 계속 진행
             
     def load_stylesheet(self):
@@ -751,21 +951,36 @@ class ModbusServerSimulator(QMainWindow):
             }
         """)
         
-    def init_modbus_store(self):
-        """Initialize the Modbus data store"""
+    def init_modbus_store(self, hr_offset=0):
+        # 홀딩 레지스터 주소 오프셋 설정
+        self.hr_offset = hr_offset
+        
+        # 홀딩 레지스터 주소 오프셋 적용 로그
+        print(f"[DEBUG] 홀딩 레지스터 주소 오프셋 {hr_offset} 적용 완료")
+        
         # Create signals object first if not already created
         if not hasattr(self, 'signals'):
             self.signals = ModbusSignals()
+        
+        # 홀딩 레지스터 오프셋이 있는 경우, 데이터 저장소 크기를 조정
+        # 기본 크기 200개(0-199) + 오프셋에 따른 추가 공간
+        hr_size = 200
+        if hr_offset > 0:
+            # 오프셋이 있는 경우, 오프셋 + 기본 크기(200)를 할당
+            # 예: 오프셋이 10이면, 0-209까지 총 210개 필요
+            hr_size = hr_offset + 200
+            logger.info(f"홀딩 레지스터 오프셋 {hr_offset} 적용, 저장소 크기: {hr_size}")
+            print(f"홀딩 레지스터 오프셋 {hr_offset} 적용, 저장소 크기: {hr_size}")
             
-        # Create data blocks with 100 registers each (0-99)
+        # Create data blocks with adjusted sizes
         # Modbus 레지스터는 0부터 시작하지만, 주소가 0부터 99까지인 경우 실제로는 100개의 레지스터가 필요함
-        # 각 레지스터 타입에 대해 100개의 레지스터(0-99) 생성
         self.store = CustomModbusSlaveContext(
             signals=self.signals,
             di=ModbusSequentialDataBlock(0, [0] * 100),   # Discrete Inputs
             co=ModbusSequentialDataBlock(0, [0] * 100),   # Coils
-            hr=ModbusSequentialDataBlock(0, [0] * 200),   # Holding Registers (0-199)
-            ir=ModbusSequentialDataBlock(0, [0] * 100)    # Input Registers
+            hr=ModbusSequentialDataBlock(0, [0] * hr_size),   # Holding Registers (0-199 + offset)
+            ir=ModbusSequentialDataBlock(0, [0] * 100),   # Input Registers
+            hr_offset=hr_offset                           # Holding Register Offset
         )
         self.context = ModbusServerContext(slaves=self.store, single=True)
         
@@ -784,10 +999,13 @@ class ModbusServerSimulator(QMainWindow):
                 with open(style_path, "r") as f:
                     self.setStyleSheet(f.read())
                     logger.info("스타일시트가 성공적으로 적용되었습니다.")
+                    print("스타일시트가 성공적으로 적용되었습니다.")
             else:
                 logger.warning(f"스타일시트 파일을 찾을 수 없습니다: {style_path}")
+                print(f"스타일시트 파일을 찾을 수 없습니다: {style_path}")
         except Exception as e:
             logger.error(f"스타일시트 적용 중 오류 발생: {e}")
+            print(f"스타일시트 적용 중 오류 발생: {e}")
             
     def apply_neumorphism_effect(self, widget):
         """뉴모피즘 효과를 적용하는 헬퍼 함수"""
@@ -830,7 +1048,7 @@ class ModbusServerSimulator(QMainWindow):
         self.apply_neumorphism_effect(conn_group)
         
         # Connection type
-        conn_layout.addWidget(QLabel("Connection type:"))
+        conn_layout.addWidget(QLabel("Type:"))
         self.conn_type_combo = QComboBox()
         self.conn_type_combo.addItem("TCP")
         conn_layout.addWidget(self.conn_type_combo)
@@ -848,11 +1066,20 @@ class ModbusServerSimulator(QMainWindow):
         self.address_edit.setStyleSheet("border: 1px solid #bec8d1; border-radius: 10px;")
         conn_layout.addWidget(self.address_edit)
         
+        # Holding Register Offset
+        conn_layout.addWidget(QLabel("HR Offset:"))
+        self.hr_offset_edit = QLineEdit("0")
+        self.hr_offset_edit.setValidator(QIntValidator(0, 9999))  # 오프셋 유효성 검사 추가
+        self.hr_offset_edit.setStyleSheet("border: 1px solid #bec8d1; border-radius: 10px;")
+        self.hr_offset_edit.setToolTip("Holding Register 주소 오프셋 (연결 후에는 변경 불가)")
+        self.hr_offset_edit.setFixedWidth(80)  # 너비 고정
+        conn_layout.addWidget(self.hr_offset_edit)
+        
         # Connect/Disconnect button
         self.connect_button = QPushButton("Connect")
         self.connect_button.setObjectName("connect_button")
         self.connect_button.clicked.connect(self.toggle_server)
-        self.connect_button.setMinimumWidth(100)
+        self.connect_button.setMinimumWidth(130)
         # 시작 아이콘 추가
         self.start_icon = QIcon("resources/start_icon.svg")
         self.stop_icon = QIcon("resources/stop_icon.svg")
@@ -862,6 +1089,13 @@ class ModbusServerSimulator(QMainWindow):
         
         conn_group.setLayout(conn_layout)
         main_layout.addWidget(conn_group)
+        
+        # 상태 라벨 추가
+        self.status_label = QLabel("Server not running")
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.status_label.setObjectName("status_label")
+        self.status_label.setStyleSheet("color: #757575; font-weight: bold;")
+        main_layout.addWidget(self.status_label)
         
         # Server options
         options_layout = QHBoxLayout()
@@ -1086,6 +1320,7 @@ class ModbusServerSimulator(QMainWindow):
                             discrete_widget.values[addr] = value
                 except Exception as e:
                     logger.warning(f"Error getting discrete input values: {e}")
+                    print(f"Error getting discrete input values: {e}")
             
             # Update holding registers
             if hasattr(self, 'holding_registers_widget'):
@@ -1097,6 +1332,7 @@ class ModbusServerSimulator(QMainWindow):
                             # Skip update if this widget has focus (user is editing)
                             if holding_widget.line_edits[addr].hasFocus():
                                 logger.debug(f"Skipping update for holding register {addr} - user is editing")
+                                print(f"Skipping update for holding register {addr} - user is editing")
                                 continue
                                 
                             value = hr_values[addr]
@@ -1113,7 +1349,7 @@ class ModbusServerSimulator(QMainWindow):
                                 holding_widget.values[addr] = hex_value
                 except Exception as e:
                     logger.warning(f"Error getting holding register values: {e}")
-            
+                
             # Update input registers
             if hasattr(self, 'input_registers_widget'):
                 input_widget = self.input_registers_widget
@@ -1124,6 +1360,7 @@ class ModbusServerSimulator(QMainWindow):
                             # Skip update if this widget has focus (user is editing)
                             if input_widget.line_edits[addr].hasFocus():
                                 logger.debug(f"Skipping update for input register {addr} - user is editing")
+                                print(f"Skipping update for input register {addr} - user is editing")
                                 continue
                                 
                             value = ir_values[addr]
@@ -1140,8 +1377,10 @@ class ModbusServerSimulator(QMainWindow):
                                 input_widget.values[addr] = hex_value
                 except Exception as e:
                     logger.warning(f"Error getting input register values: {e}")
+                    print(f"Error getting input register values: {e}")
         except Exception as e:
             logger.error(f"Error updating UI from context: {e}")
+            print(f"Error updating UI from context: {e}")
     
     def update_context_from_ui(self):
         """Update Modbus context from UI values"""
@@ -1177,10 +1416,12 @@ class ModbusServerSimulator(QMainWindow):
                         # logger.info(f"Updated holding register {addr} to {int_value} (hex: {value})")
                     except ValueError as e:
                         logger.error(f"Invalid hex value for register {addr}: {value}, error: {e}")
+                        print(f"Invalid hex value for register {addr}: {value}, error: {e}")
                         # Set to 0 if invalid
                         self.store.setValues(3, addr, [0])
         except Exception as e:
             logger.error(f"Error updating context from UI: {e}")
+            print(f"Error updating context from UI: {e}")
     @Slot(str, int, int)
     def on_register_value_changed(self, register_type, addr, value):
         """Handle register value changed signal"""
@@ -1200,7 +1441,7 @@ class ModbusServerSimulator(QMainWindow):
                 self.store.setValues(function_code, addr, [value])
             
             logger.info(f"Register value changed: {register_type}[{addr}] = {value}")
-            
+            print(f"Register value changed: {register_type}[{addr}] = {value}")
             # 레지스터 값이 변경될 때마다 파일에 저장
             self.save_registers_to_file()
         except Exception as e:
@@ -1263,14 +1504,17 @@ class ModbusServerSimulator(QMainWindow):
                 json.dump(register_data, f, indent=4)
                 
             logger.info(f"Register values saved to {self.register_file}")
+            print(f"Register values saved to {self.register_file}")
         except Exception as e:
             logger.error(f"Error saving registers to file: {e}")
+            print(f"Error saving registers to file: {e}")
             
     def load_registers_from_file(self):
         """파일에서 레지스터 값 로드"""
         try:
             if not os.path.exists(self.register_file):
                 logger.info(f"Register file {self.register_file} does not exist. Using default values.")
+                print(f"Register file {self.register_file} does not exist. Using default values.")
                 return
                 
             with open(self.register_file, 'r') as f:
@@ -1317,7 +1561,7 @@ class ModbusServerSimulator(QMainWindow):
                             self.store.setValues(3, addr, [int_value])
                         except ValueError:
                             logger.error(f"Invalid hex value for register {addr}: {hex_value}")
-                
+                            print(f"Invalid hex value for register {addr}: {hex_value}")                
                 # 홀딩 레지스터 메모 로드
                 if "holding_registers_memos" in register_data:
                     for addr_str, memo_text in register_data["holding_registers_memos"].items():
@@ -1347,8 +1591,10 @@ class ModbusServerSimulator(QMainWindow):
                             self.store.setValues(4, addr, [0])
             
             logger.info(f"Register values loaded from {self.register_file}")
+            print(f"Register values loaded from {self.register_file}")
         except Exception as e:
             logger.error(f"Error loading registers from file: {e}")
+            print(f"Error loading registers from file: {e}")
     
     def toggle_server(self):
         """Start or stop the server"""
@@ -1370,22 +1616,37 @@ class ModbusServerSimulator(QMainWindow):
             address = self.address_edit.text()
             port = int(self.port_edit.text())
             
+            # 홀딩 레지스터 오프셋 값 가져오기
+            try:
+                hr_offset = int(self.hr_offset_edit.text())
+            except ValueError:
+                hr_offset = 0
+                self.hr_offset_edit.setText("0")
+                logger.warning("오프셋 값이 유효하지 않아 0으로 초기화합니다.")
+                print("오프셋 값이 유효하지 않아 0으로 초기화합니다.")
+            
             # Reset the store to ensure we're starting fresh
             # This helps prevent issues with stale data or callbacks
-            self.init_modbus_store()
+            # Pass the holding register offset to the store
+            self.init_modbus_store(hr_offset)
             
             # 저장된 레지스터 값 로드
             self.load_registers_from_file()
+            
+            # 홀딩 레지스터 오프셋 적용
+            if hasattr(self, 'holding_registers_widget'):
+                self.holding_registers_widget.set_address_offset(hr_offset)
             
             # Create and start server thread
             self.server_thread = ModbusServerThread(address, port, self.context, self.signals)
             self.server_thread.start()
             
             # Log the attempt
-            logger.info(f"Attempting to start server at {address}:{port}")
-            
+            logger.info(f"Attempting to start server at {address}:{port} with HR offset {hr_offset}")
+            print(f"Attempting to start server at {address}:{port} with HR offset {hr_offset}")
         except Exception as e:
             logger.error(f"Failed to start server: {e}")
+            print(f"Failed to start server: {e}")
             # Show error in UI
             self.connect_button.setText("Error")
             # Reset after 2 seconds
@@ -1421,6 +1682,16 @@ class ModbusServerSimulator(QMainWindow):
                 except Exception as e:
                     logger.error(f"Error forcefully stopping thread: {e}")
             
+            # QThread 종료 예외 방지를 위해 wait() 호출
+            try:
+                if self.server_thread and self.server_thread.isRunning():
+                    logger.info("Waiting for server thread to finish...")
+                    self.server_thread.wait(2000)  # 최대 2초 대기
+                    if self.server_thread.isRunning():
+                        logger.warning("Thread still running after wait period")
+            except Exception as e:
+                logger.error(f"Error waiting for thread: {e}")
+            
             # Clean up thread reference
             self.server_thread = None
             self.server_running = False
@@ -1433,15 +1704,19 @@ class ModbusServerSimulator(QMainWindow):
         self.server_running = True
         self.connect_button.setText("Disconnect")
         self.connect_button.setObjectName("disconnect_button")
-        self.connect_button.setStyleSheet("")
-        # 서버 실행 중일 때는 중지 아이콘으로 변경
         self.connect_button.setIcon(self.stop_icon)
-        # 상태 표시줄에 온라인 아이콘 추가
-        status_msg = QLabel()
-        status_msg.setPixmap(QIcon("resources/online_icon.svg").pixmap(12, 12))
-        self.statusBar().addWidget(status_msg)
-        self.statusBar().showMessage("Server running")
-        logger.info("Server started successfully")
+        self.connect_button.setStyleSheet("")
+        
+        # 서버 시작 후 주소, 포트, 오프셋 입력 비활성화
+        self.address_edit.setReadOnly(True)
+        self.port_edit.setReadOnly(True)
+        self.hr_offset_edit.setReadOnly(True)
+        
+        # 상태 메시지 업데이트
+        self.status_label.setText(f"Server running at {self.address_edit.text()}:{self.port_edit.text()}")
+        self.status_label.setStyleSheet("color: #4CAF50;")
+        
+        logger.info(f"Server started at {self.address_edit.text()}:{self.port_edit.text()}")
     
     @Slot()
     def on_server_stopped(self):
@@ -1449,11 +1724,29 @@ class ModbusServerSimulator(QMainWindow):
         self.server_running = False
         self.connect_button.setText("Connect")
         self.connect_button.setObjectName("connect_button")
-        self.connect_button.setStyleSheet("")
         # 서버 중지 시 시작 아이콘으로 변경
         self.connect_button.setIcon(self.start_icon)
+        
+        # 서버 중지 후 주소, 포트, 오프셋 입력 다시 활성화
+        self.address_edit.setReadOnly(False)
+        self.port_edit.setReadOnly(False)
+        self.hr_offset_edit.setReadOnly(False)
+        
         # 상태바 초기화
         self.statusBar().clearMessage()
+        
+        # 오프셋 값이 있는 경우 상태 표시
+        try:
+            hr_offset = int(self.hr_offset_edit.text())
+            if hr_offset > 0:
+                self.status_label.setText(f"Server stopped. HR offset: {hr_offset}")
+                logger.info(f"Server stopped with HR offset: {hr_offset}")
+            else:
+                self.status_label.setText("Server stopped.")
+                logger.info("Server stopped.")
+        except ValueError:
+            self.status_label.setText("Server stopped.")
+            logger.info("Server stopped.")
         
         # QStatusBar에서 모든 QLabel 위젯 제거
         status_bar_widgets = []
@@ -1543,19 +1836,33 @@ class ModbusServerSimulator(QMainWindow):
             elif function_code == 6 or function_code == 16:  # Write Holding Register(s)
                 register_type = "holding_registers"
                 widget = self.holding_registers_widget
-                if address in widget.line_edits:
+                
+                # Apply offset adjustment for holding registers
+                actual_address = address
+                if hasattr(self, 'hr_offset') and self.hr_offset > 0:
+                    # Check if address is valid after offset adjustment
+                    if address >= self.hr_offset:
+                        actual_address = address - self.hr_offset
+                        logger.info(f"Applying offset {self.hr_offset}: client address {address} -> UI address {actual_address}")
+                    else:
+                        logger.warning(f"Client address {address} is less than offset {self.hr_offset}, ignoring")
+                        return
+                
+                if actual_address in widget.line_edits:
                     # Format value as 4-digit hex string
                     hex_value = f"{value:04X}"
-                    logger.info(f"Client wrote to holding register {address}: {value} (hex: {hex_value})")
+                    logger.info(f"Client wrote to holding register {address} (UI addr: {actual_address}): {value} (hex: {hex_value})")
                     # Block signals temporarily to prevent feedback loop
-                    old_state = widget.line_edits[address].blockSignals(True)
-                    widget.line_edits[address].setText(hex_value)
-                    widget.line_edits[address].blockSignals(old_state)
-                    widget.values[address] = hex_value
+                    old_state = widget.line_edits[actual_address].blockSignals(True)
+                    widget.line_edits[actual_address].setText(hex_value)
+                    widget.line_edits[actual_address].blockSignals(old_state)
+                    widget.values[actual_address] = hex_value
+                else:
+                    logger.warning(f"No UI element found for holding register at address {actual_address} (client address: {address})")
                     
             QApplication.processEvents()
         except Exception as e:
-            logger.error(f"Error handling client write: {e}")
+            logger.error(f"Error handling client write: {e}", exc_info=True)
 
 
 def main():
