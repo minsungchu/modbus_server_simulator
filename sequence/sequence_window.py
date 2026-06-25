@@ -9,9 +9,12 @@ from typing import Callable
 
 from PySide6.QtWidgets import (
     QFileDialog,
+    QHBoxLayout,
+    QLabel,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QPushButton,
     QToolBar,
     QVBoxLayout,
     QWidget,
@@ -59,22 +62,51 @@ class SequenceWindow(QMainWindow):
 
         central = QWidget()
         layout = QVBoxLayout(central)
+        layout.addLayout(self._build_control_bar())
         layout.addWidget(self.editor, 1)
         layout.addWidget(self.log_view)
         self.setCentralWidget(central)
         self._build_toolbar()
+        self._set_running_ui(False)
 
     def _build_toolbar(self) -> None:
+        """파일 조작용 툴바(New/Open/Save)."""
         bar = QToolBar()
         self.addToolBar(bar)
         bar.addAction("New", self._new)
         bar.addAction("Open", self._open)
         bar.addAction("Save", self._save)
         bar.addAction("Save As", self._save_as)
-        bar.addSeparator()
-        bar.addAction("Run", self._run)
-        bar.addAction("Step", self._step)
-        bar.addAction("Stop", self._stop)
+
+    def _build_control_bar(self) -> QHBoxLayout:
+        """실행 제어 버튼(▶ 실행 / ⏭ 스텝 / ■ 정지) 바를 만든다."""
+        bar = QHBoxLayout()
+        self.run_button = QPushButton("▶ 실행")
+        self.run_button.setObjectName("seq_run_button")
+        self.run_button.clicked.connect(self._run)
+        self.step_button = QPushButton("⏭ 스텝")
+        self.step_button.setObjectName("seq_step_button")
+        self.step_button.clicked.connect(self._step)
+        self.stop_button = QPushButton("■ 정지")
+        self.stop_button.setObjectName("seq_stop_button")
+        self.stop_button.clicked.connect(self._stop)
+        self.run_status = QLabel("정지됨")
+        self.run_status.setStyleSheet("font-weight: bold; padding-left: 8px;")
+        for btn in (self.run_button, self.step_button, self.stop_button):
+            btn.setMinimumWidth(90)
+            bar.addWidget(btn)
+        bar.addWidget(self.run_status)
+        bar.addStretch(1)
+        return bar
+
+    def _set_running_ui(self, running: bool) -> None:
+        """실행 상태에 따라 버튼 활성화/상태 라벨을 갱신한다."""
+        self.run_button.setEnabled(not running)
+        self.stop_button.setEnabled(running)
+        self.run_status.setText("실행 중…" if running else "정지됨")
+        self.run_status.setStyleSheet(
+            "font-weight: bold; padding-left: 8px; color: %s;" % ("#22c55e" if running else "#94a3b8")
+        )
 
     def _load_or_default(self) -> Sequence:
         if os.path.exists(self._path):
@@ -131,7 +163,8 @@ class SequenceWindow(QMainWindow):
         self._engine.step_logged.connect(self.log)
         self._engine.finished.connect(self._on_finished)
         self.log("=== 실행 시작 ===")
-        self._engine.start()
+        if self._engine.start():
+            self._set_running_ui(True)
 
     def _step(self) -> None:
         if self._engine is None or not self._engine.running:
@@ -145,6 +178,7 @@ class SequenceWindow(QMainWindow):
 
     def _on_finished(self, reason: str) -> None:
         self.log(f"=== 종료: {reason} ===")
+        self._set_running_ui(False)
 
     def log(self, text: str) -> None:
         """로그뷰에 한 줄 추가한다."""

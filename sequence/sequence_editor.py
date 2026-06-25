@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QComboBox,
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from sequence.sequence_model import (
+    OPERATORS,
     REGISTER_TYPES,
     Condition,
     Edge,
@@ -34,6 +35,7 @@ from sequence.sequence_model import (
     NodeType,
     Sequence,
     WriteAction,
+    clamp_value,
 )
 
 logger = logging.getLogger("ModbusServerSim")
@@ -284,54 +286,61 @@ class SequenceScene(QGraphicsScene):
 
 
 class PropertyPanel(QWidget):
-    """선택된 노드의 config 를 편집하는 폼."""
+    """선택된 노드의 config 를 마우스(콤보/스핀박스/버튼)로 편집하는 폼."""
 
     changed = Signal()  # 편집 발생 시(엣지/그래프 갱신 트리거)
 
     def __init__(self) -> None:
         super().__init__()
+        self._item: NodeItem | None = None
         self._node: Node | None = None
-        self._layout = QVBoxLayout(self)
-        self._layout.addWidget(QLabel("속성"))
-        self.setMaximumWidth(280)
+        self._form = QVBoxLayout(self)
+        self._form.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.setMaximumWidth(340)
+        self._render()
 
     def _clear(self) -> None:
-        while self._layout.count() > 1:
-            item = self._layout.takeAt(1)
+        while self._form.count():
+            item = self._form.takeAt(0)
             w = item.widget()
             if w is not None:
                 w.deleteLater()
 
     def set_node(self, item: NodeItem | None) -> None:
-        """선택 노드를 표시한다(None 이면 비움)."""
-        self._clear()
+        """선택 노드를 표시한다(None 이면 안내 문구)."""
+        self._item = item
         self._node = item.node if item else None
-        if self._node is None:
-            return
+        self._render()
+
+    def refresh(self) -> None:
+        """현재 노드 기준으로 폼을 다시 그린다(항목 추가/삭제 후)."""
+        self._render()
+
+    def _render(self) -> None:
+        self._clear()
+        self._form.addWidget(QLabel("속성"))
         node = self._node
+        if node is None:
+            self._form.addWidget(QLabel("노드를 선택하세요"))
+            return
+        self._form.addWidget(QLabel(f"{node.type.value} ({node.id})"))
+        self._form.addWidget(QLabel("라벨"))
         label_edit = QLineEdit(node.label)
         label_edit.textChanged.connect(self._on_label_changed)
-        self._layout.addWidget(QLabel(f"노드: {node.type.value} ({node.id})"))
-        self._layout.addWidget(QLabel("라벨"))
-        self._layout.addWidget(label_edit)
+        self._form.addWidget(label_edit)
 
-        if node.type is NodeType.SEND:
-            self._build_send(node)
-        elif node.type is NodeType.WAIT:
-            self._build_wait(node)
-        elif node.type is NodeType.BRANCH:
-            self._build_branch(node)
-        elif node.type is NodeType.DELAY:
-            self._build_delay(node)
-        elif node.type is NodeType.END:
-            self._build_end(node)
-        self._layout.addStretch(1)
+        builder = {
+            NodeType.SEND: self._build_send,
+            NodeType.WAIT: self._build_wait,
+            NodeType.BRANCH: self._build_branch,
+            NodeType.DELAY: self._build_delay,
+            NodeType.END: self._build_end,
+        }.get(node.type)
+        if builder is not None:
+            builder(node)
+        self._form.addStretch(1)
 
-    def _on_label_changed(self, text: str) -> None:
-        if self._node is not None:
-            self._node.label = text
-            self.changed.emit()
-
+    # --- 공용 입력 위젯 ---
     def _reg_combo(self, current: str | None) -> QComboBox:
         combo = QComboBox()
         combo.addItems(list(REGISTER_TYPES))
@@ -339,81 +348,165 @@ class PropertyPanel(QWidget):
             combo.setCurrentText(current)
         return combo
 
+    def _op_combo(self, current: str | None) -> QComboBox:
+        combo = QComboBox()
+        combo.addItems(list(OPERATORS))
+        if current in OPERATORS:
+            combo.setCurrentText(current)
+        return combo
+
+    def _num_spin(self, value: int) -> QSpinBox:
+        spin = QSpinBox()
+        spin.setRange(0, 65535)
+        spin.setValue(int(value or 0))
+        return spin
+
+    def _on_label_changed(self, text: str) -> None:
+        if self._node is not None:
+            self._node.label = text
+            self.changed.emit()
+
+    # --- 리스트 항목 추가/삭제(구조 변경 후 폼 재구성) ---
+    def _add_item(self, lst: list, item) -> None:
+        lst.append(item)
+        self.changed.emit()
+        QTimer.singleShot(0, self.refresh)
+
+    def _remove_item(self, lst: list, item) -> None:
+        if item in lst:
+            lst.remove(item)
+        self.changed.emit()
+        QTimer.singleShot(0, self.refresh)
+
+    def _remove_index(self, lst: list, idx: int) -> None:
+        if 0 <= idx < len(lst):
+            lst.pop(idx)
+        self.changed.emit()
+        QTimer.singleShot(0, self.refresh)
+
+    # --- SEND ---
     def _build_send(self, node: Node) -> None:
-        self._layout.addWidget(QLabel("쓰기 동작 (세미콜론 구분)"))
-        edit = QLineEdit(";".join(f"{w.reg_type},{w.addr},{w.value}" for w in node.writes))
-        edit.setPlaceholderText("coils,0,1;holding_registers,5,1234")
+        self._form.addWidget(QLabel("쓰기 동작 (레지스터 / 주소 / 값)"))
+        for action in list(node.writes):
+            self._add_write_row(node, action)
+        add_btn = QPushButton("+ 쓰기 추가")
+        add_btn.clicked.connect(lambda: self._add_item(node.writes, WriteAction("holding_registers", 0, 0)))
+        self._form.addWidget(add_btn)
+
+    def _add_write_row(self, node: Node, action: WriteAction) -> None:
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        reg = self._reg_combo(action.reg_type)
+        addr = self._num_spin(action.addr)
+        val = self._num_spin(action.value)
 
         def apply() -> None:
-            actions: list[WriteAction] = []
-            for chunk in edit.text().split(";"):
-                parts = [p.strip() for p in chunk.split(",")]
-                if len(parts) == 3 and parts[0] in REGISTER_TYPES:
-                    actions.append(WriteAction(parts[0], int(parts[1]), int(parts[2])))
-            node.writes = actions
+            action.reg_type = reg.currentText()
+            action.addr = addr.value()
+            action.value = clamp_value(action.reg_type, val.value())
             self.changed.emit()
 
-        edit.editingFinished.connect(apply)
-        self._layout.addWidget(edit)
+        reg.currentTextChanged.connect(lambda _t: apply())
+        addr.valueChanged.connect(lambda _v: apply())
+        val.valueChanged.connect(lambda _v: apply())
+        del_btn = QPushButton("✕")
+        del_btn.setFixedWidth(28)
+        del_btn.clicked.connect(lambda: self._remove_item(node.writes, action))
+        for w in (reg, addr, val, del_btn):
+            h.addWidget(w)
+        self._form.addWidget(row)
 
+    # --- WAIT ---
     def _build_wait(self, node: Node) -> None:
-        self._layout.addWidget(QLabel("조건 (세미콜론 구분, 순서=포트)"))
-        edit = QLineEdit(";".join(f"{c.reg_type},{c.addr},{c.op},{c.value}" for c in node.conditions))
-        edit.setPlaceholderText("discrete_inputs,0,==,1;coils,1,==,1")
-
-        def apply() -> None:
-            conds: list[Condition] = []
-            for chunk in edit.text().split(";"):
-                parts = [p.strip() for p in chunk.split(",")]
-                if len(parts) == 4 and parts[0] in REGISTER_TYPES:
-                    conds.append(Condition(parts[0], int(parts[1]), parts[2], int(parts[3])))
-            node.conditions = conds
-            self.changed.emit()
-
-        edit.editingFinished.connect(apply)
-        self._layout.addWidget(edit)
-        self._layout.addWidget(QLabel("타임아웃(ms, 0=무한)"))
+        self._form.addWidget(QLabel("조건 (순서 = 출력 포트 cond_i)"))
+        for cond in list(node.conditions):
+            self._add_cond_row(node, cond)
+        add_btn = QPushButton("+ 조건 추가")
+        add_btn.clicked.connect(lambda: self._add_item(node.conditions, Condition("discrete_inputs", 0, "==", 1)))
+        self._form.addWidget(add_btn)
+        self._form.addWidget(QLabel("타임아웃(ms, 0=무한)"))
         spin = QSpinBox()
         spin.setRange(0, 3_600_000)
         spin.setValue(node.timeout_ms or 0)
         spin.valueChanged.connect(lambda v: (setattr(node, "timeout_ms", v or None), self.changed.emit()))
-        self._layout.addWidget(spin)
+        self._form.addWidget(spin)
 
-    def _build_branch(self, node: Node) -> None:
-        self._layout.addWidget(QLabel("대상 레지스터"))
-        combo = self._reg_combo(node.branch_reg_type)
-        node.branch_reg_type = node.branch_reg_type or combo.currentText()
-        combo.currentTextChanged.connect(lambda t: (setattr(node, "branch_reg_type", t), self.changed.emit()))
-        self._layout.addWidget(combo)
-        self._layout.addWidget(QLabel("주소"))
-        addr = QSpinBox()
-        addr.setRange(0, 65535)
-        addr.setValue(node.branch_addr or 0)
-        addr.valueChanged.connect(lambda v: (setattr(node, "branch_addr", v), self.changed.emit()))
-        self._layout.addWidget(addr)
-        self._layout.addWidget(QLabel("case 값 (쉼표 구분, 순서=포트)"))
-        edit = QLineEdit(",".join(str(v) for v in node.cases))
+    def _add_cond_row(self, node: Node, cond: Condition) -> None:
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        reg = self._reg_combo(cond.reg_type)
+        addr = self._num_spin(cond.addr)
+        op = self._op_combo(cond.op)
+        val = self._num_spin(cond.value)
 
         def apply() -> None:
-            node.cases = [int(p) for p in edit.text().split(",") if p.strip().lstrip("-").isdigit()]
+            cond.reg_type = reg.currentText()
+            cond.addr = addr.value()
+            cond.op = op.currentText()
+            cond.value = clamp_value(cond.reg_type, val.value())
             self.changed.emit()
 
-        edit.editingFinished.connect(apply)
-        self._layout.addWidget(edit)
+        reg.currentTextChanged.connect(lambda _t: apply())
+        addr.valueChanged.connect(lambda _v: apply())
+        op.currentTextChanged.connect(lambda _t: apply())
+        val.valueChanged.connect(lambda _v: apply())
+        del_btn = QPushButton("✕")
+        del_btn.setFixedWidth(28)
+        del_btn.clicked.connect(lambda: self._remove_item(node.conditions, cond))
+        for w in (reg, addr, op, val, del_btn):
+            h.addWidget(w)
+        self._form.addWidget(row)
 
+    # --- BRANCH ---
+    def _build_branch(self, node: Node) -> None:
+        node.branch_reg_type = node.branch_reg_type or "holding_registers"
+        node.branch_addr = node.branch_addr or 0
+        self._form.addWidget(QLabel("대상 레지스터"))
+        reg = self._reg_combo(node.branch_reg_type)
+        reg.currentTextChanged.connect(lambda t: (setattr(node, "branch_reg_type", t), self.changed.emit()))
+        self._form.addWidget(reg)
+        self._form.addWidget(QLabel("주소"))
+        addr = self._num_spin(node.branch_addr)
+        addr.valueChanged.connect(lambda v: (setattr(node, "branch_addr", v), self.changed.emit()))
+        self._form.addWidget(addr)
+        self._form.addWidget(QLabel("case 값 (순서 = 출력 포트 case_i)"))
+        for idx in range(len(node.cases)):
+            self._add_case_row(node, idx)
+        add_btn = QPushButton("+ case 추가")
+        add_btn.clicked.connect(lambda: self._add_item(node.cases, 0))
+        self._form.addWidget(add_btn)
+
+    def _add_case_row(self, node: Node, idx: int) -> None:
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        spin = self._num_spin(node.cases[idx])
+        spin.valueChanged.connect(lambda v, i=idx: (node.cases.__setitem__(i, v), self.changed.emit()))
+        del_btn = QPushButton("✕")
+        del_btn.setFixedWidth(28)
+        del_btn.clicked.connect(lambda _=False, i=idx: self._remove_index(node.cases, i))
+        h.addWidget(QLabel(f"case_{idx}"))
+        h.addWidget(spin)
+        h.addWidget(del_btn)
+        self._form.addWidget(row)
+
+    # --- DELAY ---
     def _build_delay(self, node: Node) -> None:
-        self._layout.addWidget(QLabel("지연(ms)"))
+        self._form.addWidget(QLabel("지연(ms)"))
         spin = QSpinBox()
         spin.setRange(0, 3_600_000)
         spin.setValue(node.delay_ms)
         spin.valueChanged.connect(lambda v: (setattr(node, "delay_ms", v), self.changed.emit()))
-        self._layout.addWidget(spin)
+        self._form.addWidget(spin)
 
+    # --- END ---
     def _build_end(self, node: Node) -> None:
-        self._layout.addWidget(QLabel("결과 라벨"))
+        self._form.addWidget(QLabel("결과 라벨"))
         edit = QLineEdit(node.result)
         edit.textChanged.connect(lambda t: (setattr(node, "result", t), self.changed.emit()))
-        self._layout.addWidget(edit)
+        self._form.addWidget(edit)
 
 
 class SequenceEditor(QWidget):
