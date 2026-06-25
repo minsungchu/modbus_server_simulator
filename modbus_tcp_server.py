@@ -19,127 +19,30 @@ import threading
 import time
 import os
 import sys
+import json
 from datetime import datetime
 import socket
 from contextlib import closing
 
 
 # 내장된 스타일시트 (resources/style.qss 파일 내용을 직접 포함)
-EMBEDDED_QSS_STYLE = """/* Neumorphism Style Sheet for Modbus TCP Server Simulator */
+# 내장 스타일시트: resources/style.qss 를 단일 소스로 읽어 사용한다.
+# (PyInstaller 번들에서도 동작하도록 _MEIPASS 경로를 우선 확인)
+def _load_embedded_qss():
+    """resources/style.qss 내용을 반환한다(실패 시 최소 다크 테마 기본값)."""
+    base = getattr(sys, "_MEIPASS", os.path.abspath(os.path.dirname(__file__)))
+    qss_path = os.path.join(base, "resources", "style.qss")
+    try:
+        with open(qss_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return (
+            "QWidget { background-color: #0f172a; color: #e2e8f0; "
+            "font-family: 'Segoe UI', 'Malgun Gothic', Arial, sans-serif; font-size: 10pt; }"
+        )
 
-/* 전체 애플리케이션 스타일 */
-QWidget {
-    background-color: #e0e5ec;
-    color: #333;
-    font-family: "Segoe UI", Arial, sans-serif;
-    font-size: 10pt;
-}
 
-/* 타이틀 레이블 스타일 개선 */
-#title_label {
-    color: #2980b9;
-    font-size: 18pt;
-    font-weight: bold;
-    padding: 15px;
-    border-bottom: 2px solid #3498db;
-    margin-bottom: 5px;
-    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #f0f5fa, stop:1 #e0e5ec);
-    border-radius: 10px;
-}
-
-/* 그룹박스 스타일 */
-QGroupBox {
-    border: 1px solid #bec8d1;
-    border-radius: 15px;
-    margin-top: 1.5em;
-    padding: 15px;
-    background-color: #f0f5fa;
-    /* 뉴모피즘 효과는 코드에서 QGraphicsDropShadowEffect로 적용됨 */
-}
-
-QGroupBox::title {
-    subcontrol-origin: margin;
-    subcontrol-position: top center;
-    padding: 0 12px;
-    color: #2980b9;
-    font-weight: bold;
-    font-size: 12pt;
-    background-color: #f0f5fa;
-    border: 1px solid #bec8d1;
-    border-radius: 8px;
-}
-
-/* 레지스터 그룹 스타일 */
-#coils_group {
-    background-color: #fff8f0;
-    border-top: 3px solid #ff8c00;
-}
-
-#discrete_inputs_group {
-    background-color: #ebf5fb;
-    border-top: 3px solid #3498db;
-}
-
-#holding_registers_group {
-    background-color: #f4ecf7;
-    border-top: 3px solid #9b59b6;
-}
-
-#input_registers_group {
-    background-color: #eafaf1;
-    border-top: 3px solid #2ecc71;
-}
-
-/* 연결 설정 그룹 스타일 */
-#connection_group {
-    background-color: #f5f7fa;
-    border-top: 3px solid #34495e;
-    padding: 3px;
-}
-
-/* 버튼 스타일 */
-QPushButton {
-    background-color: #f0f5fa;
-    border: none;
-    padding: 10px 20px;
-    border-radius: 12px;
-    color: #3498db;
-    font-weight: bold;
-}
-
-QPushButton:hover {
-    background-color: #e5eef7;
-    color: #2980b9;
-}
-
-QPushButton:pressed {
-    background-color: #e0e5ec;
-    padding: 11px 21px 9px 19px; /* 눌렸을 때 약간 이동하는 효과 */
-}
-
-/* 입력 필드 스타일 */
-QLineEdit, QSpinBox {
-    background-color: #f5f7fa;
-    border: 1px solid #bec8d1;
-    border-radius: 10px;
-    padding: 8px;
-    color: #2d3436;
-}
-
-/* 체크박스 스타일 */
-QCheckBox {
-    spacing: 10px;
-    color: #2c3e50;
-    font-weight: 500;
-}
-
-/* 라벨 스타일 */
-QLabel {
-    color: #2c3e50;
-    font-weight: 500;
-    padding: 5px;
-}
-"""
+EMBEDDED_QSS_STYLE = _load_embedded_qss()
 
 # PySide6 관련 임포트
 from PySide6.QtCore import QObject, Signal, Slot, QTimer, Qt, QRegularExpression, QThread, QSize, QPoint, QRect
@@ -155,48 +58,37 @@ from pymodbus.datastore import ModbusSequentialDataBlock, ModbusServerContext, M
 from pymodbus.device import ModbusDeviceIdentification
 
 # pymodbus 버전 호환성을 위한 import 처리
-from pymodbus.server import StartTcpServer
+import asyncio
+from pymodbus.server import StartAsyncTcpServer, ServerAsyncStop
 
-# pymodbus 버전에 따른 호환성 처리
-try:
-    from pymodbus.framer.socket_framer import ModbusSocketFramer  # 최신 버전
-except ImportError:
-    try:
-        from pymodbus.transaction import ModbusSocketFramer  # 구버전
-    except ImportError:
-        ModbusSocketFramer = None  # 모듈이 없으면 None으로 설정
-
-# StopServer 함수가 없으므로 직접 구현
-def StopServer():
-    """Pymodbus 3.0.0에서는 StopServer 함수가 없으므로 직접 구현
-    
-    asyncio 이벤트 루프를 중지하여 서버를 종료합니다.
-    """
-    import asyncio
-    loop = asyncio.get_event_loop()
-    if loop.is_running():
-        logger.info("이벤트 루프 중지 요청")
-        print("이벤트 루프 중지 요청")
-        loop.stop()
-
-# 만약 ModbusSocketFramer가 없으면 None으로 설정 (버전 호환성)
-try:
-    ModbusSocketFramer
-except NameError:
-    logger.warning("ModbusSocketFramer를 찾을 수 없습니다. None으로 설정합니다.")
-    print("ModbusSocketFramer를 찾을 수 없습니다. None으로 설정합니다.")
-    ModbusSocketFramer = None
+# 애플리케이션 버전 (pyproject.toml 단일 소스)
+from appversion import APP_VERSION
 
 # 로깅 설정
-logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.DEBUG)
-logger = logging.getLogger("ModbusServerSim")
+# - 파일은 회전 핸들러로 용량을 제한(최대 1MB × 3개)하여 로그 파일이 무한히 커지지 않도록 한다.
+# - 평상시에는 WARNING 이상(에러/경고)만 기록한다. 자세한 디버그가 필요하면
+#   환경변수 MODBUS_DEBUG=1 로 실행하면 INFO 까지 기록된다.
+from logging.handlers import RotatingFileHandler
 
-# 파일 핸들러 추가
-file_handler = logging.FileHandler('modbus_server.log')
-file_handler.setLevel(logging.DEBUG)
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-file_handler.setFormatter(formatter)
+_LOG_LEVEL = logging.INFO if os.environ.get("MODBUS_DEBUG") == "1" else logging.WARNING
+
+logger = logging.getLogger("ModbusServerSim")
+logger.setLevel(_LOG_LEVEL)
+logger.propagate = False
+
+_log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+file_handler = RotatingFileHandler(
+    'modbus_server.log', maxBytes=1_000_000, backupCount=3, encoding='utf-8'
+)
+file_handler.setLevel(_LOG_LEVEL)
+file_handler.setFormatter(_log_formatter)
 logger.addHandler(file_handler)
+
+_console_handler = logging.StreamHandler()
+_console_handler.setLevel(logging.WARNING)
+_console_handler.setFormatter(_log_formatter)
+logger.addHandler(_console_handler)
 
 class ModbusSignals(QObject):
     """스레드 간 시그널 처리를 위한 클래스
@@ -221,221 +113,41 @@ class CustomModbusSlaveContext(ModbusSlaveContext):
         self.last_write_source = None
         self.hr_offset = hr_offset  # 홀딩 레지스터 오프셋 값 설정
         logger.info(f"커스텀 ModbusSlaveContext 초기화 완료 - HR 오프셋: {self.hr_offset}")
-        print(f"커스텀 ModbusSlaveContext 초기화 완료 - HR 오프셋: {self.hr_offset}")
         
     def getValues(self, fx, address, count=1):
-        """Override getValues to log client read operations and apply offset for holding registers"""
+        """부모 getValues 를 위임 호출한다.
+
+        컬럼별 절대 주소 방식을 사용하므로(오프셋 미사용) 주소 변환이 필요 없다.
+        성능을 위해 정상 경로에서는 로깅하지 않고, 오류 시에만 기록한다.
+        """
         try:
-            # Get the current call stack to determine if this is from UI or external client
-            import traceback
-            stack = traceback.extract_stack()
-            caller = stack[-2].name if len(stack) >= 2 else "unknown"
-            
-            # 디버깅을 위한 추가 로그
-            logger.debug(f"getValues called: fx={fx}, address={address}, count={count}, caller={caller}")
-            # print(f"getValues called: fx={fx}, address={address}, count={count}, caller={caller}")
-            
-            # 함수 코드 매핑 (디버깅 용)
-            function_code_map = {
-                1: "Read Coils",
-                2: "Read Discrete Inputs",
-                3: "Read Holding Registers",
-                4: "Read Input Registers"
-            }
-            fc_name = function_code_map.get(fx, f"Unknown({fx})")
-            logger.debug(f"Function code: {fc_name}")
-            
-            # 홀딩 레지스터(fx=3)인 경우 오프셋 적용
-            actual_address = address
-            logger.info(f"[getValues] 함수 코드: {fx}, 요청 주소: {address}, HR 오프셋: {self.hr_offset}")
-            
-            # Get the current call stack to determine if this is from UI or external client
-            stack = traceback.extract_stack()
-            caller = stack[-2].name if len(stack) >= 2 else "unknown"
-            is_ui_request = caller in ["update_ui_from_context", "update_context_from_ui"]
-            
-            # 홀딩 레지스터 관련 함수 코드(3, 6, 16)인 경우 오프셋 적용
-            # fx=3: Read Holding Registers, fx=6: Write Single Register, fx=16: Write Multiple Registers
-            if fx in [3, 6, 16]:  # 홀딩 레지스터 관련 함수 코드인 경우
-                if self.hr_offset > 0 and not is_ui_request:  # 오프셋이 있고 UI에서의 요청이 아닌 경우에만 적용
-                    # 클라이언트가 요청한 주소에서 오프셋을 빼서 실제 데이터 저장소 주소를 계산
-                    # 예: 클라이언트가 10을 요청하면 실제로는 0번 데이터를 반환해야 함 (10-10=0)
-                    
-                    # 클라이언트 주소가 오프셋보다 작은 경우 유효하지 않은 주소
-                    if address < self.hr_offset:
-                        logger.warning(f"[getValues] 유효하지 않은 주소 요청: 클라이언트 주소={address}, 오프셋={self.hr_offset}, 0 값 반환")
-                        print(f"[DEBUG] 유효하지 않은 주소 요청: 클라이언트 주소={address}, 오프셋={self.hr_offset}, 0 값 반환")
-                        return [0] * count
-                        
-                    actual_address = address - self.hr_offset
-                    logger.info(f"[getValues] 홀딩 레지스터 오프셋 적용: 클라이언트 요청 주소={address}, 실제 주소={actual_address}, 오프셋={self.hr_offset}")
-                    print(f"[DEBUG] 홀딩 레지스터 오프셋 적용: 클라이언트 요청 주소={address}, 실제 주소={actual_address}, 오프셋={self.hr_offset}")
-                elif self.hr_offset > 0 and is_ui_request:
-                    # UI에서의 요청은 오프셋 검증을 건너뛰고 주소 그대로 사용
-                    # logger.info(f"[getValues] UI 요청 - 오프셋 검증 건너뛰기: 주소={address}, 오프셋={self.hr_offset}")
-                    # print(f"[DEBUG] UI 요청 - 오프셋 검증 건너뛰기: 주소={address}, 오프셋={self.hr_offset}")
-                    actual_address = address
-                    
-                    # 유효한 주소 범위를 벗어나는지 확인
-                    # 동적으로 할당된 데이터 저장소 크기를 고려하여 검증
-                    hr_size = 200
-                    if hasattr(self, '_blocks') and hasattr(self._blocks[3], 'values'):
-                        hr_size = len(self._blocks[3].values)
-                    
-                    if actual_address >= hr_size:  # 동적으로 할당된 홀딩 레지스터 범위 검증
-                        logger.warning(f"[getValues] 오프셋 적용 후 유효하지 않은 주소: {actual_address}, 데이터 저장소 크기: {hr_size}, 0 값 반환")
-                        print(f"[getValues] 오프셋 적용 후 유효하지 않은 주소: {actual_address}, 데이터 저장소 크기: {hr_size}, 0 값 반환")
-                        return [0] * count
-                else:
-                    # logger.info(f"[getValues] 홀딩 레지스터지만 오프셋이 0이므로 적용하지 않음")
-                    # print(f"[getValues] 홀딩 레지스터지만 오프셋이 0이므로 적용하지 않음")
-                    pass
-            
-            # Call the parent method to get the values with adjusted address
-            values = super().getValues(fx, actual_address, count)
-            
-            # 값 로깅 (디버깅 용)
-            logger.debug(f"Retrieved values: {values}")
-            # print(f"Retrieved values: {values}")
-            
-            # Log external client reads (not from our own UI)
-            if caller not in ["update_ui_from_context", "update_context_from_ui"]:
-                if fx == 3 and self.hr_offset > 0:
-                    logger.info(f"External client read detected: FC={fx}({fc_name}), Client Address={address}, Actual Address={actual_address}, Count={count}, Values={values}")
-                    print(f"[DEBUG] External client read detected: FC={fx}({fc_name}), Client Address={address}, Actual Address={actual_address}, Count={count}, Values={values}, HR Offset={self.hr_offset}")
-                    
-                    # 추가 디버깅: 내부 데이터 저장소 값 확인
-                    if hasattr(self, '_blocks') and hasattr(self._blocks[3], 'values'):
-                        internal_values = [self._blocks[3].values.get(i, 0) for i in range(10)]
-                        print(f"[DEBUG] Internal data store first 10 values: {internal_values}")
-                else:
-                    logger.info(f"External client read detected: FC={fx}({fc_name}), Address={address}, Count={count}, Values={values}")
-                    print(f"External client read detected: FC={fx}({fc_name}), Address={address}, Count={count}, Values={values}")
-                
-            return values
+            return super().getValues(fx, address, count)
         except Exception as e:
-            logger.error(f"Error in getValues: {e}")
-            print(f"Error in getValues: {e}")
-            logger.error(f"Error traceback: {traceback.format_exc()}")
-            print(f"Error traceback: {traceback.format_exc()}")
-            # Return default values in case of error to avoid breaking client reads
-            if fx in [1, 2]:  # Coils and Discrete Inputs
-                return [0] * count
-            else:  # Holding and Input Registers
-                return [0] * count
-    
+            logger.error(f"Error in getValues (fx={fx}, addr={address}, count={count}): {e}")
+            return [0] * count
+
     def setValues(self, fx, address, values):
-        """Override setValues to detect external writes and apply offset for holding registers"""
-        # Get the current call stack to determine if this is from UI or external client
-        import traceback
-        stack = traceback.extract_stack()
-        caller = stack[-2].name if len(stack) >= 2 else "unknown"
-        
+        """부모 setValues 호출 후, 외부 클라이언트 쓰기면 UI 갱신 시그널을 발생시킨다.
+
+        컬럼별 절대 주소 방식을 사용하므로 오프셋 변환은 하지 않는다.
+        호출자가 UI 자체(자기 자신)인 경우에는 피드백 루프를 막기 위해 시그널을 보내지 않는다.
+        성능을 위해 정상 경로에서는 로깅하지 않는다.
+        """
+        # 호출자 이름을 저렴하게 확인 (전체 스택 추출 대신 한 프레임만 조회)
         try:
-            # 기본적으로 요청 주소를 그대로 사용
-            actual_address = address
-            
-            # 디버깅을 위한 추가 로그 (상세)
-            logger.info(f"[setValues 시작] 함수 코드: {fx}, 요청 주소: {address}, HR 오프셋: {self.hr_offset}, 값: {values}, 호출자: {caller}")
-            # print(f"[DEBUG] [setValues 시작] 함수 코드: {fx}, 요청 주소: {address}, HR 오프셋: {self.hr_offset}, 값: {values}, 호출자: {caller}")
-            
-            # UI 요청인지 확인 - 좀 더 구체적인 조건 정의
-            is_ui_request = caller in ["update_ui_from_context", "update_context_from_ui", "on_register_value_changed"]
-            logger.info(f"[setValues] UI 요청 여부: {is_ui_request}, 호출자: {caller}")
-            # print(f"[DEBUG] [setValues] UI 요청 여부: {is_ui_request}, 호출자: {caller}")
-            
-            # 함수 코드 매핑 (디버깅 용)
-            function_code_map = {
-                5: "Write Single Coil",
-                6: "Write Single Register",
-                15: "Write Multiple Coils",
-                16: "Write Multiple Registers"
-            }
-            fc_name = function_code_map.get(fx, f"Unknown({fx})")
-            logger.info(f"[setValues] 함수 코드: {fx} ({fc_name})")
-            # print(f"[DEBUG] [setValues] 함수 코드: {fx} ({fc_name})")
-            
-            # 내부 데이터 저장소 접근 전/후 값 확인 (디버깅용)
-            if hasattr(self, '_blocks') and hasattr(self._blocks[fx], 'values'):
-                old_values = {}
-                if address < len(self._blocks[fx].values):
-                    for i in range(len(values)):
-                        if address + i < len(self._blocks[fx].values):
-                            old_values[address + i] = self._blocks[fx].values.get(address + i, 0)
-                logger.info(f"[setValues] 변경 전 데이터 저장소 값: {old_values}")
-                # print(f"[DEBUG] [setValues] 변경 전 데이터 저장소 값: {old_values}")
-            
-            # 홀딩 레지스터 관련 함수 코드(3, 6, 16)인 경우 오프셋 적용
-            # fx=3: Read Holding Registers, fx=6: Write Single Register, fx=16: Write Multiple Registers
-            if fx in [3, 6, 16]:  # 홀딩 레지스터 관련 함수 코드인 경우
-                if self.hr_offset > 0 and not is_ui_request:  # 오프셋이 있고 UI에서의 요청이 아닌 경우에만 적용
-                    # 클라이언트가 요청한 주소에서 오프셋을 빼서 실제 데이터 저장소 주소를 계산
-                    # 예: 클라이언트가 10을 요청하면 실제로는 0번 데이터를 저장해야 함 (10-10=0)
-                    
-                    # 클라이언트 주소가 오프셋보다 작은 경우 유효하지 않은 주소
-                    if address < self.hr_offset:
-                        logger.warning(f"[setValues] 유효하지 않은 주소 요청: 클라이언트 주소={address}, 오프셋={self.hr_offset}, 쓰기 무시")
-                        print(f"[DEBUG] [setValues] 유효하지 않은 주소 요청: 클라이언트 주소={address}, 오프셋={self.hr_offset}, 쓰기 무시")
-                        return
-                        
-                    actual_address = address - self.hr_offset
-                    logger.info(f"[setValues] 홀딩 레지스터 오프셋 적용: 클라이언트 요청 주소={address}, 실제 주소={actual_address}, 오프셋={self.hr_offset}")
-                    # print(f"[DEBUG] [setValues] 홀딩 레지스터 오프셋 적용: 클라이언트 요청 주소={address}, 실제 주소={actual_address}, 오프셋={self.hr_offset}")
-                elif self.hr_offset > 0 and is_ui_request:
-                    # UI에서의 요청은 오프셋 검증을 건너뛰고 주소 그대로 사용
-                    logger.info(f"[setValues] UI 요청 - 오프셋 검증 건너뛰기: 주소={address}, 오프셋={self.hr_offset}")
-                    # print(f"[DEBUG] [setValues] UI 요청 - 오프셋 검증 건너뛰기: 주소={address}, 오프셋={self.hr_offset}")
-                    actual_address = address
-                    
-                    # 유효한 주소 범위를 벗어나는지 확인
-                    # 동적으로 할당된 데이터 저장소 크기를 고려하여 검증
-                    hr_size = 200
-                    if hasattr(self, '_blocks') and hasattr(self._blocks[3], 'values'):
-                        hr_size = len(self._blocks[3].values)
-                    
-                    if actual_address >= hr_size:  # 동적으로 할당된 홀딩 레지스터 범위 검증
-                        logger.warning(f"[setValues] 오프셋 적용 후 유효하지 않은 주소: {actual_address}, 데이터 저장소 크기: {hr_size}, 쓰기 무시")
-                        # print(f"[DEBUG] [setValues] 오프셋 적용 후 유효하지 않은 주소: {actual_address}, 데이터 저장소 크기: {hr_size}, 쓰기 무시")
-                        return
-                else:
-                    logger.info(f"[setValues] 홀딩 레지스터지만 오프셋이 0이므로 적용하지 않음")
-                    # print(f"[DEBUG] [setValues] 홀딩 레지스터지만 오프셋이 0이므로 적용하지 않음")
-            
-            # Call the parent method to set the values with adjusted address
-            logger.info(f"[setValues] 실제 값 저장 전 - 함수 코드: {fx}, 계산된 주소: {actual_address}, 값: {values}")
-            # print(f"[DEBUG] [setValues] 실제 값 저장 전 - 함수 코드: {fx}, 계산된 주소: {actual_address}, 값: {values}")
-            
-            super().setValues(fx, actual_address, values)
-            
-            # 값 저장 후 디버깅 - 실제로 값이 저장되었는지 확인
-            if hasattr(self, '_blocks') and hasattr(self._blocks[fx], 'values'):
-                new_values = {}
-                for i in range(len(values)):
-                    if actual_address + i < len(self._blocks[fx].values):
-                        new_values[actual_address + i] = self._blocks[fx].values.get(actual_address + i, 0)
-                logger.info(f"[setValues] 변경 후 데이터 저장소 값: {new_values}")
-                print(f"[DEBUG] [setValues] 변경 후 데이터 저장소 값: {new_values}")
-            
-            # Only emit signals for external client writes (not from our own UI)
-            if caller not in ["on_register_value_changed", "update_context_from_ui"]:
-                # This is likely an external client write
+            caller = sys._getframe(1).f_code.co_name
+        except Exception:
+            caller = ""
+
+        try:
+            super().setValues(fx, address, values)
+
+            # 우리 UI 자체의 쓰기가 아니면(=외부 클라이언트 쓰기) UI 갱신 시그널 발생
+            if caller not in ("on_register_value_changed", "update_context_from_ui"):
                 for i, value in enumerate(values):
-                    if fx in [3, 6, 16] and self.hr_offset > 0:  # 홀딩 레지스터 관련 함수 코드
-                        # 외부 클라이언트 쓰기 감지 시 오프셋 적용된 주소 정보 로깅
-                        logger.info(f"External client write detected: FC={fx}, Client Address={address+i}, Actual Address={actual_address+i}, Value={value}, Offset={self.hr_offset}")
-                        print(f"[DEBUG] External client write detected: FC={fx}, Client Address={address+i}, Actual Address={actual_address+i}, Value={value}, Offset={self.hr_offset}")
-                        # UI에 클라이언트 주소 그대로 전달 (오프셋이 적용된 주소)
-                        self.signals.client_write_detected.emit(fx, address+i, value)
-                    else:
-                        logger.info(f"External client write detected: FC={fx}, Address={address+i}, Value={value}")
-                        print(f"[DEBUG] External client write detected: FC={fx}, Address={address+i}, Value={value}")
-                        # Emit signal to notify UI
-                        self.signals.client_write_detected.emit(fx, address+i, value)
+                    self.signals.client_write_detected.emit(fx, address + i, value)
         except Exception as e:
-            logger.error(f"Error in setValues: {e}")
-            logger.error(f"Error traceback: {traceback.format_exc()}")
-            print(f"[DEBUG] Error in setValues: {e}")
-            print(f"[DEBUG] Error traceback: {traceback.format_exc()}")
+            logger.error(f"Error in setValues (fx={fx}, addr={address}): {e}")
 
 
 class ModbusServerThread(QThread):
@@ -452,166 +164,94 @@ class ModbusServerThread(QThread):
         self.signals = signals  # 시그널 객체
         self.running = False  # 서버 실행 상태
         self._server_started = False  # 서버 시작 완료 상태
-        self.server = None  # 서버 객체
-        # 스레드 종료 플래그
-        self._stop_requested = False
-        
+        self.loop = None  # 이 스레드 전용 asyncio 이벤트 루프
+
         logger.info(f"ModbusServerThread 초기화: {address}:{port}")
-        print(f"ModbusServerThread 초기화: {address}:{port}")
+
+    def _port_in_use(self):
+        """대상 주소/포트가 이미 사용 중인지 확인한다."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(1)
+        try:
+            return sock.connect_ex((self.address, self.port)) == 0
+        except OSError:
+            return False
+        finally:
+            sock.close()
 
     def run(self):
-        import traceback
+        """전용 asyncio 이벤트 루프에서 Modbus TCP 서버를 실행한다.
+
+        StartAsyncTcpServer 는 서버가 종료(ServerAsyncStop)될 때까지 블록하며,
+        종료되면 루프가 정상적으로 끝나 포트가 해제된다.
+        """
+        # 포트 선점 여부 사전 점검
+        if self._port_in_use():
+            logger.error(f"Port {self.port} is already in use.")
+            self.signals.server_stopped.emit()
+            return
+
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+        self.running = True
         try:
-            self.running = True
-            self._stop_requested = False
-            logger.info(f"Starting Modbus server on {self.address}:{self.port}")
-            print(f"Starting Modbus server on {self.address}:{self.port}")
-            
-            # Create a custom identity for the server
-            identity = ModbusDeviceIdentification()
-            identity.VendorName = 'Modbus Server Simulator'
-            identity.ProductCode = 'MODSIM'
-            identity.VendorUrl = 'https://github.com/'
-            identity.ProductName = 'Modbus Server Simulator'
-            identity.ModelName = 'Simulator'
-            identity.MajorMinorRevision = '1.0'
-            
-            # Signal that we're starting the server
-            self._server_started = True
-            self.signals.server_started.emit()
-            
-            # 먼저 포트가 이미 사용 중인지 확인
-            try:
-                import socket
-                test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                test_socket.settimeout(1)
-                result = test_socket.connect_ex((self.address, self.port))
-                test_socket.close()
-                if result == 0:
-                    logger.error(f"Port {self.port} is already in use!")
-                    print(f"Port {self.port} is already in use!")
-                    # 포트 사용 중 오류 메시지 전달을 위해 예외 발생
-                    raise Exception(f"Port {self.port} is already in use. Please select a different port.")
-            except Exception as e:
-                if "already in use" in str(e):
-                    # 이미 발생한 예외 재사용
-                    logger.error(f"{str(e)}")
-                    raise
-                # 소켓 테스트 중 다른 오류가 발생했다면 무시하고 계속 진행
-                logger.warning(f"Socket test failed: {e}, continuing anyway")
-            
-            # 다양한 pymodbus 버전을 지원하기 위한 서버 시작 방법
-            # 상세한 예외 처리를 위해 다양한 방법 시도
-            try:
-                # 1. pymodbus 3.0.0 버전에 맞게 서버 시작 시도
-                logger.info("Attempting to start server with pymodbus 3.0.0 compatible method")
-                # pymodbus 3.x에서 framer는 문자열 또는 클래스가 아닌 프레이머 이름을 사용해야 함
-                StartTcpServer(
-                    context=self.context,
-                    identity=identity,
-                    address=(self.address, self.port),
-                    framer="socket",  # ModbusSocketFramer 대신 "socket" 문자열 사용
-                    # 이 호출은 블록하고 이 스레드가 종료될 때까지 리턴하지 않음
-                )
-            except Exception as e:
-                logger.error(f"Error using primary server start method: {e}")
-                logger.error(f"Exception type: {type(e).__name__}")
-                logger.error(f"Traceback: {traceback.format_exc()}")
-                print(f"Error using primary server start method: {e}")
-                
-                # 2. 대체 시작 방법 시도 (특정 오류가 발생한 경우에만)
-                if "argument after ** must be a mapping" in str(e) or \
-                   "got multiple values for argument" in str(e) or \
-                   "__init__() got an unexpected keyword argument" in str(e):
-                    try:
-                        logger.info("Attempting alternative server start method")
-                        print("Attempting alternative server start method")
-                        # 인자 구조를 다르게 시도
-                        StartTcpServer(
-                            context=self.context,
-                            address=(self.address, self.port),
-                            framer="socket",  # ModbusSocketFramer 대신 "socket" 문자열 사용
-                            identity=identity
-                        )
-                    except Exception as alt_e:
-                        logger.error(f"Error using alternative server start method: {alt_e}")
-                        logger.error(f"Traceback: {traceback.format_exc()}")
-                        print(f"Error using alternative server start method: {alt_e}")
-                        raise
-                else:
-                    # 특정 오류가 아닌 경우 원래 예외를 다시 발생시킴
-                    raise
-                
+            self.loop.run_until_complete(self._serve())
         except Exception as e:
-            logger.error(f"Error starting Modbus server: {e}")
-            logger.error(f"Full traceback: {traceback.format_exc()}")
-            print(f"Error starting Modbus server: {e}")
-            # 오류 발생 시 시그널 전송 (UI 업데이트를 위해)
-            if hasattr(self, 'signals'):
-                try:
-                    # 에러 정보를 포함한 커스텀 시그널을 만들고 사용할 수도 있음
-                    self.signals.server_stopped.emit()
-                except Exception as signal_e:
-                    logger.error(f"Error emitting signal: {signal_e}")
+            logger.error(f"Modbus 서버 실행 오류: {e}")
         finally:
+            try:
+                self.loop.close()
+            except Exception:
+                pass
+            self.loop = None
             self.running = False
             self._server_started = False
             self.signals.server_stopped.emit()
             logger.info("Server stopped")
-            print("Server stopped")
+
+    async def _serve(self):
+        """서버 시작 코루틴. ServerAsyncStop 호출 시 반환된다."""
+        identity = ModbusDeviceIdentification()
+        identity.VendorName = 'Modbus Server Simulator'
+        identity.ProductCode = 'MODSIM'
+        identity.ProductName = 'Modbus Server Simulator'
+        identity.ModelName = 'Simulator'
+        identity.MajorMinorRevision = '1.0'
+
+        self._server_started = True
+        self.signals.server_started.emit()
+        # 서버가 종료될 때까지 블록 (ServerAsyncStop 으로 해제)
+        await StartAsyncTcpServer(
+            context=self.context,
+            identity=identity,
+            address=(self.address, self.port),
+        )
 
     def stop(self):
-        # 서버 종료 방법
-        if self.running and self._server_started:
+        """서버를 정상 종료한다.
+
+        UI(메인) 스레드에서 호출되며, 서버 스레드의 asyncio 루프에 ServerAsyncStop 을
+        안전하게 예약하여 서버를 깔끔하게 멈추고 포트를 해제한다. 이후 재연결이 가능하다.
+        """
+        loop = self.loop
+        if not self.running or loop is None:
+            return
+
+        async def _shutdown():
             try:
-                logger.info("Stopping Modbus server...")
-                print("Stopping Modbus server...")
-                
-                # 종료 플래그 설정
-                self._stop_requested = True
-                self.running = False
-                self._server_started = False
-                
-                # pymodbus 3.0.0 버전에 맞게 서버 종료
-                try:
-                    # StopServer 함수 호출
-                    StopServer()
-                    logger.info("Server stopped using StopServer function")
-                    print("Server stopped using StopServer function")
-                except Exception as e:
-                    logger.warning(f"Error using StopServer: {e}")
-                    print(f"Error using StopServer: {e}")
-                
-                # 소켓 연결을 통해 서버 종료 시도 (백업 방법)
-                import socket
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(1.0)
-                try:
-                    # 서버에 연결하여 종료 시그널 전송
-                    sock.connect((self.address, self.port))
-                    sock.send(b'\x00')
-                except Exception as e:
-                    logger.debug(f"Socket connection for shutdown: {e}")
-                    print(f"Socket connection for shutdown: {e}")
-                finally:
-                    try:
-                        sock.close()
-                    except:
-                        pass
-                
-                # 스레드 종료 처리
-                # QThread의 wait 메서드를 사용하여 스레드가 종료되기를 기다림
-                self.wait(1000)  # 1초 동안 기다림
-                
-                # 시그널 전송
-                self.signals.server_stopped.emit()
-                logger.info("Modbus server stopped successfully")
-                print("Modbus server stopped successfully")
+                await ServerAsyncStop()
             except Exception as e:
-                logger.error(f"Error stopping server: {e}")
-                print(f"Error stopping server: {e}")
-                # 에러가 발생해도 시그널은 보내서 UI가 업데이트되도록 함
-                self.signals.server_stopped.emit()
+                logger.warning(f"ServerAsyncStop 오류(무시 가능): {e}")
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(_shutdown(), loop)
+            future.result(timeout=3)
+        except Exception as e:
+            logger.warning(f"서버 종료 예약 중 오류: {e}")
+
+        # 루프가 끝나고 스레드가 완전히 종료될 때까지 대기
+        if not self.wait(3000):
+            logger.warning("서버 스레드가 제한 시간 내에 종료되지 않았습니다.")
 
 
 class RegisterWidget(QWidget):
@@ -625,134 +265,89 @@ class RegisterWidget(QWidget):
     # 메모 변경 시그널 추가
     memo_changed = Signal(str, int, str)  # register_type, address, memo_text
     
-    def __init__(self, register_type, register_count=100, parent=None):
+    def __init__(self, register_type, register_count=100, parent=None, columns=None):
         super().__init__(parent)
         self.register_type = register_type
-        # 홀딩 레지스터인 경우 200개로 설정
+        # 홀딩 레지스터는 컬럼별 (시작주소, 개수) 설정으로 동작한다.
+        # columns 예: [(0, 100), (100, 100)] -> 컬럼1=0~99, 컬럼2=100~199
         if register_type == "holding_registers":
-            self.register_count = 200
+            self.columns = columns if columns else [(0, 100), (100, 100)]
+            self.register_count = sum(count for _, count in self.columns)
         else:
+            self.columns = []
             self.register_count = register_count
         self.is_bit_type = register_type in ["coils", "discrete_inputs"]
+        # 모든 딕셔너리는 홀딩 레지스터의 경우 '절대 주소'를 키로 사용한다.
         self.values = {}
         self.checkboxes = {}
         self.line_edits = {}
         self.memo_edits = {}  # 메모 텍스트 필드 저장용
         self.address_labels = {}  # 주소 라벨 저장용
-        self.offset = 0  # 홀딩 레지스터 주소 오프셋 초기값
-        
+        self.offset = 0  # (하위 호환용, 더 이상 사용하지 않음)
+
         self.init_ui()
         
     def init_ui(self):
-        # 홀딩 레지스터인 경우 두 컬럼으로 표시
+        # 홀딩 레지스터인 경우 컬럼별 (시작주소, 개수) 설정에 따라 표시
         if self.register_type == "holding_registers":
-            # 기존 레이아웃 제거 및 새 레이아웃 생성
             # 기존 레이아웃이 있으면 삭제
             if self.layout():
                 QWidget().setLayout(self.layout())
-                
+
             # 메인 레이아웃을 수평 레이아웃으로 생성
             main_layout = QHBoxLayout()
-            
-            # 첫 번째 컬럼 (0-99)
-            left_widget = QWidget()
-            left_layout = QGridLayout(left_widget)
-            left_layout.setSpacing(5)
-            
-            # 두 번째 컬럼 (100-199)
-            right_widget = QWidget()
-            right_layout = QGridLayout(right_widget)
-            right_layout.setSpacing(5)
-            
-            # 헤더 추가
-            # 헤더 라벨에도 패딩 0 적용
-            address_header = QLabel("Address")
-            address_header.setStyleSheet("padding: 0px;")
-            value_header = QLabel("Value (Hex)")
-            value_header.setStyleSheet("padding: 0px;")
-            memo_header = QLabel("Memo")
-            memo_header.setStyleSheet("padding: 0px;")
-            
-            left_layout.addWidget(address_header, 0, 0)
-            left_layout.addWidget(value_header, 0, 1)
-            left_layout.addWidget(memo_header, 0, 2)
-            
-            address_header2 = QLabel("Address")
-            address_header2.setStyleSheet("padding: 0px;")
-            value_header2 = QLabel("Value (Hex)")
-            value_header2.setStyleSheet("padding: 0px;")
-            memo_header2 = QLabel("Memo")
-            memo_header2.setStyleSheet("padding: 0px;")
-            
-            right_layout.addWidget(address_header2, 0, 0)
-            right_layout.addWidget(value_header2, 0, 1)
-            right_layout.addWidget(memo_header2, 0, 2)
-            
-            # 첫 번째 컬럼 레지스터 (0-99)
-            for i in range(100):
-                # 주소 레이블
-                address_label = QLabel(str(i + self.offset))
-                address_label.setStyleSheet("padding: 0px;")
-                left_layout.addWidget(address_label, i+1, 0)
-                self.address_labels[i] = address_label
-                
-                # 값 입력 필드
-                line_edit = self.create_register_widget(i)
-                self.line_edits[i] = line_edit
-                left_layout.addWidget(line_edit, i+1, 1)
-                self.values[i] = "0000"
-                
-                # 메모 필드
-                memo_edit = QLineEdit()
-                memo_edit.setPlaceholderText("메모 입력")
-                memo_edit.setMinimumWidth(100)
-                memo_edit.setStyleSheet("border: 1px solid #bec8d1; border-radius: 10px; padding: 0px;")
-                # 메모 변경 시 시그널 연결
-                memo_edit.textChanged.connect(lambda text, addr=i: self.on_memo_changed(addr, text))
-                self.memo_edits[i] = memo_edit
-                left_layout.addWidget(memo_edit, i+1, 2)
-            
-            # 두 번째 컬럼 레지스터 (100-199)
-            for i in range(100, 200):
-                # 주소 레이블
-                address_label = QLabel(str(i + self.offset))
-                address_label.setStyleSheet("padding: 0px;")
-                right_layout.addWidget(address_label, i-99, 0)  # i-99로 인덱스 조정
-                self.address_labels[i] = address_label
-                
-                # 값 입력 필드
-                line_edit = self.create_register_widget(i)
-                self.line_edits[i] = line_edit
-                right_layout.addWidget(line_edit, i-99, 1)  # i-99로 인덱스 조정
-                self.values[i] = "0000"
-                
-                # 메모 필드
-                memo_edit = QLineEdit()
-                memo_edit.setPlaceholderText("메모 입력")
-                memo_edit.setMinimumWidth(100)
-                memo_edit.setStyleSheet("border: 1px solid #bec8d1; border-radius: 10px; padding: 0px;")
-                # 메모 변경 시 시그널 연결
-                memo_edit.textChanged.connect(lambda text, addr=i: self.on_memo_changed(addr, text))
-                self.memo_edits[i] = memo_edit
-                right_layout.addWidget(memo_edit, i-99, 2)  # i-99로 인덱스 조정
-            
-            # 스크롤 영역 추가
-            left_scroll = QScrollArea()
-            left_scroll.setWidget(left_widget)
-            left_scroll.setWidgetResizable(True)
-            
-            right_scroll = QScrollArea()
-            right_scroll.setWidget(right_widget)
-            right_scroll.setWidgetResizable(True)
-            
-            # 메인 레이아웃에 두 컬럼 추가
-            main_layout.addWidget(left_scroll)
-            main_layout.addWidget(right_scroll)
-            
-            # 시그널 연결
-            for addr in range(200):
+
+            # 각 컬럼을 설정된 시작 주소/개수로 구성한다 (절대 주소를 키로 사용)
+            for start, count in self.columns:
+                col_widget = QWidget()
+                col_layout = QGridLayout(col_widget)
+                col_layout.setSpacing(5)
+
+                # 헤더 추가 (패딩 0 적용)
+                address_header = QLabel("Address")
+                address_header.setStyleSheet("padding: 0px;")
+                value_header = QLabel("Value (Hex)")
+                value_header.setStyleSheet("padding: 0px;")
+                memo_header = QLabel("Memo")
+                memo_header.setStyleSheet("padding: 0px;")
+                col_layout.addWidget(address_header, 0, 0)
+                col_layout.addWidget(value_header, 0, 1)
+                col_layout.addWidget(memo_header, 0, 2)
+
+                for row in range(count):
+                    addr = start + row
+
+                    # 주소 레이블 (절대 주소 표시)
+                    address_label = QLabel(str(addr))
+                    address_label.setStyleSheet("padding: 0px;")
+                    col_layout.addWidget(address_label, row + 1, 0)
+                    self.address_labels[addr] = address_label
+
+                    # 값 입력 필드
+                    line_edit = self.create_register_widget(addr)
+                    self.line_edits[addr] = line_edit
+                    col_layout.addWidget(line_edit, row + 1, 1)
+                    self.values[addr] = "0000"
+
+                    # 메모 필드
+                    memo_edit = QLineEdit()
+                    memo_edit.setPlaceholderText("메모 입력")
+                    memo_edit.setMinimumWidth(100)
+                    memo_edit.setStyleSheet("border: 1px solid #334155; border-radius: 10px; padding: 0px;")
+                    memo_edit.textChanged.connect(lambda text, a=addr: self.on_memo_changed(a, text))
+                    self.memo_edits[addr] = memo_edit
+                    col_layout.addWidget(memo_edit, row + 1, 2)
+
+                # 스크롤 영역 추가
+                col_scroll = QScrollArea()
+                col_scroll.setWidget(col_widget)
+                col_scroll.setWidgetResizable(True)
+                main_layout.addWidget(col_scroll)
+
+            # 값 입력 시그널 연결
+            for addr in self.line_edits:
                 self.connect_line_edit(addr)
-            
+
             self.setLayout(main_layout)
             return
         
@@ -819,7 +414,7 @@ class RegisterWidget(QWidget):
             line_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
         # 레지스터 입력창에 테두리 직접 적용 및 패딩 0으로 설정
-        line_edit.setStyleSheet("border: 1px solid #bec8d1; border-radius: 10px; padding: 0px;")
+        line_edit.setStyleSheet("border: 1px solid #334155; border-radius: 10px; padding: 0px;")
         return line_edit
     
     def connect_checkbox(self, addr):
@@ -833,7 +428,6 @@ class RegisterWidget(QWidget):
     def on_bit_changed(self, addr, state):
         # 디버깅을 위해 실제 상태 값 출력
         logger.info(f"Raw checkbox state: {state}, type: {type(state)}, Qt.Checked: {Qt.CheckState.Checked}")
-        print(f"Raw checkbox state: {state}, type: {type(state)}, Qt.Checked: {Qt.CheckState.Checked}")
         
         # 체크박스 상태 확인 - isChecked() 사용
         is_checked = self.checkboxes[addr].isChecked()
@@ -841,85 +435,60 @@ class RegisterWidget(QWidget):
         
         self.values[addr] = value
         logger.info(f"Bit changed: {self.register_type}[{addr}] = {value}, checkbox is checked: {is_checked}")
-        print(f"Bit changed: {self.register_type}[{addr}] = {value}, checkbox is checked: {is_checked}")
         # 값 변경 시그널 발생
         self.value_changed.emit(self.register_type, addr, value)
     
     def on_register_changed(self, addr):
+        """입력 완료(editingFinished) 시 값을 4자리 16진수로 정규화하여 표시한다.
+
+        Args:
+            addr (int): 대상 레지스터의 절대 주소.
+        """
+        text = self.line_edits[addr].text().strip()
         try:
-            text = self.line_edits[addr].text()
-            # Try to parse as hex first
-            if text.startswith("0x"):
-                value = int(text, 16)
-            else:
-                # Try hex without prefix
-                try:
-                    value = int(text, 16)
-                except ValueError:
-                    # Fall back to decimal
-                    value = int(text)
-            
-            # Ensure value is in valid range for 16-bit register
-            value = max(0, min(value, 65535))
-            self.values[addr] = value
-            
-            # Update the display with formatted hex
-            self.line_edits[addr].setText(f"{value:X}")
-            logger.info(f"Register changed: {self.register_type}[{addr}] = {value}")
-            print(f"Register changed: {self.register_type}[{addr}] = {value}")
-            
-            # 값 변경 시그널 발생
-            self.value_changed.emit(self.register_type, addr, value)
+            value = int(text, 16) if text else 0
         except ValueError:
-            # Reset to previous value on error
-            self.line_edits[addr].setText(f"{self.values[addr]:X}")
-    
-    def on_value_changed(self, addr, text):
-        try:
-            # Validate hex input
-            if not text:
+            # 파싱 실패 시 직전에 보관된 값으로 되돌린다.
+            try:
+                value = int(self.values.get(addr, "0"), 16)
+            except (ValueError, TypeError):
                 value = 0
-                text = "0000"
-            else:
-                # Convert to uppercase
-                text = text.upper()
-                # Remove any non-hex characters
-                text = ''.join(c for c in text if c in '0123456789ABCDEF')
-                # Add leading zeros if needed (but keep it at most 4 characters)
-                if len(text) > 4:
-                    text = text[-4:]  # Take only the last 4 characters if too long
-                else:
-                    text = text.zfill(4)  # Add leading zeros if needed
-                
-                # Convert to integer
-                value = int(text, 16)
-            
-            # Ensure value is in valid range for 16-bit register
-            value = max(0, min(value, 65535))
-            
-            # Store the formatted hex string
-            self.values[addr] = text
-            
-            # Update the display with the properly formatted text
-            # Block signals to prevent recursive calls
-            old_state = self.line_edits[addr].blockSignals(True)
-            self.line_edits[addr].setText(text)
-            self.line_edits[addr].blockSignals(old_state)
-            
-            logger.info(f"Register changed: {self.register_type}[{addr}] = {text} (int: {value})")
-            print(f"Register changed: {self.register_type}[{addr}] = {text} (int: {value})")
-            
-            # 값 변경 시그널 발생
-            self.value_changed.emit(self.register_type, addr, value)
-        except ValueError as e:
-            logger.error(f"Error in on_value_changed: {e}")
-            print(f"Error in on_value_changed: {e}")
-            # Reset to previous value on error
-            if addr in self.values:
-                self.line_edits[addr].setText(self.values[addr])
-            else:
-                self.line_edits[addr].setText("0000")
-                self.values[addr] = "0000"
+
+        # 16비트 레지스터 유효 범위로 제한
+        value = max(0, min(value, 65535))
+        hex_value = f"{value:04X}"
+        self.values[addr] = hex_value
+
+        # 입력 완료 시점에만 4자리로 정규화하여 표시 (시그널 차단으로 재귀 방지)
+        old_state = self.line_edits[addr].blockSignals(True)
+        self.line_edits[addr].setText(hex_value)
+        self.line_edits[addr].blockSignals(old_state)
+
+        logger.info(f"Register changed: {self.register_type}[{addr}] = {hex_value} (int: {value})")
+        self.value_changed.emit(self.register_type, addr, value)
+
+    def on_value_changed(self, addr, text):
+        """타이핑 도중(textChanged) 처리.
+
+        입력창 텍스트를 다시 쓰지 않으므로 커서가 유지되어 4자리 16진수를
+        자연스럽게 연속 입력할 수 있다. 4자리 정규화는 on_register_changed에서 수행한다.
+
+        Args:
+            addr (int): 대상 레지스터의 절대 주소.
+            text (str): 현재 입력창의 텍스트.
+        """
+        hex_text = text.strip()
+        try:
+            value = int(hex_text, 16) if hex_text else 0
+        except ValueError:
+            # 검증기가 16진수만 허용하므로 일반적으로 도달하지 않음
+            return
+
+        # 16비트 레지스터 유효 범위로 제한
+        value = max(0, min(value, 65535))
+        # 내부 값은 4자리 16진수 문자열로 보관하되 입력창은 건드리지 않는다.
+        self.values[addr] = f"{value:04X}"
+        self.value_changed.emit(self.register_type, addr, value)
     
     def on_memo_changed(self, addr, text):
         """메모 입력 필드 변경 처리"""
@@ -927,52 +496,27 @@ class RegisterWidget(QWidget):
         if self.register_type == "holding_registers":
             self.memo_changed.emit(self.register_type, addr, text)
             logger.debug(f"Memo changed: {self.register_type}[{addr}] = {text}")
-            print(f"Memo changed: {self.register_type}[{addr}] = {text}")
     
     def update_value(self, addr, value):
-        """Update a register value from the server"""
-        if addr < 0 or addr >= self.register_count:
-            return
-        
+        """서버 값으로 레지스터 표시를 갱신한다 (절대 주소 기준)."""
         if self.is_bit_type:
-            # For bit types (coils, discrete inputs)
+            if addr not in self.checkboxes:
+                return
             self.values[addr] = value
             self.checkboxes[addr].setChecked(bool(value))
         else:
-            # For register types (holding registers, input registers)
-            # Format as 4-digit hex string
+            if addr not in self.line_edits:
+                return
+            # 4자리 16진수 문자열로 포맷
             hex_value = f"{value:04X}"
-            
-            # Only update if the widget doesn't have focus (not being edited)
+
+            # 편집 중(포커스 보유)이 아닐 때만 갱신
             if not self.line_edits[addr].hasFocus():
-                # Block signals to prevent feedback loops
                 old_state = self.line_edits[addr].blockSignals(True)
                 self.line_edits[addr].setText(hex_value)
                 self.line_edits[addr].blockSignals(old_state)
-                
-                # Store the hex string value
                 self.values[addr] = hex_value
-                
                 logger.debug(f"Updated {self.register_type}[{addr}] to {hex_value} from server")
-                print(f"Updated {self.register_type}[{addr}] to {hex_value} from server")
-                
-    def set_address_offset(self, offset):
-        """홀딩 레지스터 주소 오프셋을 설정하고 주소 라벨을 업데이트합니다.
-        
-        Args:
-            offset (int): 적용할 주소 오프셋 값
-        """
-        if self.register_type != "holding_registers":
-            return  # 홀딩 레지스터가 아니면 아무 작업도 하지 않음
-            
-        self.offset = offset
-        
-        # 모든 주소 라벨 업데이트
-        for addr, label in self.address_labels.items():
-            label.setText(str(addr + offset))
-            
-        logger.info(f"홀딩 레지스터 주소 오프셋 {offset} 적용 완료")
-        print(f"홀딩 레지스터 주소 오프셋 {offset} 적용 완료")
 
 
 class ModbusServerSimulator(QMainWindow):
@@ -983,7 +527,7 @@ class ModbusServerSimulator(QMainWindow):
     """
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Modbus Server Simulator")
+        self.setWindowTitle(f"Modbus Server Simulator  v{APP_VERSION}")
         self.resize(900, 600)
         
         # 최소 창 크기 설정 - UI 리사이징 시 글자가 가려지지 않도록 최소 크기 설정
@@ -1000,7 +544,11 @@ class ModbusServerSimulator(QMainWindow):
         
         # 레지스터 값 저장 파일 경로 설정
         self.register_file = "modbus_registers.json"
-        
+
+        # 홀딩 레지스터 컬럼 설정: [(시작주소, 개수), ...]
+        # 기본값은 기존 동작과 동일하게 컬럼1=0~99, 컬럼2=100~199
+        self.holding_columns = [(0, 100), (100, 100)]
+
         # Initialize Modbus data store
         self.init_modbus_store()
         
@@ -1022,11 +570,17 @@ class ModbusServerSimulator(QMainWindow):
         # Server thread
         self.server_thread = None
         self.server_running = False
+
+        # 시퀀스 시뮬레이션 창 (단일 인스턴스, 최초 열 때 생성)
+        self._sequence_window = None
         
         # Timer for polling data changes
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_from_context)
         self.timer.start(1000)  # Update every 1000ms (1초) - 업데이트 빈도 감소
+
+        # 앱 시작 시 저장된 컬럼 설정·레지스터 값·메모 복원 (껐다 켜도 유지)
+        self.restore_saved_state()
     
     def create_server_icon(self):
         """서버 애플리케이션의 아이콘 생성
@@ -1053,7 +607,7 @@ class ModbusServerSimulator(QMainWindow):
         self.setWindowIcon(icon)
         
         # 더 이상 파일로 저장하지 않음 (외부 파일 생성 방지)
-        print("서버 아이콘 생성 및 설정 완료")
+        logger.debug("서버 아이콘 생성 및 설정 완료")
 
     def create_button_icons(self):
         """모든 버튼 아이콘을 동적으로 생성
@@ -1183,7 +737,7 @@ class ModbusServerSimulator(QMainWindow):
         
         self.dynamic_icons["input"] = QIcon(input_icon)
         
-        print("버튼 아이콘 생성 완료")
+        logger.debug("버튼 아이콘 생성 완료")
             
     def load_stylesheet(self):
         """서버 애플리케이션의 스타일시트 로드
@@ -1195,11 +749,9 @@ class ModbusServerSimulator(QMainWindow):
             # 내장된 QSS 스타일 정의 (원래 style.qss 파일에서 가져온 내용)
             self.setStyleSheet(EMBEDDED_QSS_STYLE)
             logger.info("내장된 스타일시트 적용 성공")
-            print("내장된 스타일시트 적용 성공")
                 
         except Exception as e:
             logger.error(f"스타일시트 로드 중 오류 발생: {e}")
-            print(f"스타일시트 로드 중 오류 발생: {e}")
             self._apply_default_style()
     
     def _apply_default_style(self):
@@ -1263,45 +815,37 @@ class ModbusServerSimulator(QMainWindow):
             }
         """)
         
-    def init_modbus_store(self, hr_offset=0):
-        # 홀딩 레지스터 주소 오프셋 설정
-        self.hr_offset = hr_offset
-        
-        # 홀딩 레지스터 주소 오프셋 적용 로그
-        print(f"[DEBUG] 홀딩 레지스터 주소 오프셋 {hr_offset} 적용 완료")
-        
+    def init_modbus_store(self, hr_size=200):
+        """Modbus 데이터 저장소를 초기화한다.
+
+        홀딩 레지스터는 컬럼별 절대 주소 방식을 사용하므로 전역 오프셋(hr_offset)은
+        항상 0이며, 데이터 블록은 0번지부터 hr_size개를 연속 할당한다. 따라서 클라이언트가
+        요청하는 주소가 곧 데이터 블록의 인덱스가 된다.
+
+        Args:
+            hr_size (int): 홀딩 레지스터 데이터 블록 크기(= 사용하는 최대 주소 + 1).
+        """
+        # 컬럼별 절대 주소 방식이므로 전역 오프셋은 사용하지 않는다.
+        self.hr_offset = 0
+
         # Create signals object first if not already created
         if not hasattr(self, 'signals'):
             self.signals = ModbusSignals()
-        
-        # 홀딩 레지스터 오프셋이 있는 경우, 데이터 저장소 크기를 조정
-        # 기본 크기 200개(0-199) + 오프셋에 따른 추가 공간
-        hr_size = 200
-        if hr_offset > 0:
-            # 오프셋이 있는 경우, 오프셋 + 기본 크기(200)를 할당
-            # 예: 오프셋이 10이면, 0-209까지 총 210개 필요
-            hr_size = hr_offset + 200
-            logger.info(f"홀딩 레지스터 오프셋 {hr_offset} 적용, 저장소 크기: {hr_size}")
-            print(f"홀딩 레지스터 오프셋 {hr_offset} 적용, 저장소 크기: {hr_size}")
-            
-        # Create data blocks with adjusted sizes
-        # Modbus 레지스터는 0부터 시작하지만, 주소가 0부터 99까지인 경우 실제로는 100개의 레지스터가 필요함
+
+        # 컬럼 범위를 모두 포함할 수 있도록 최소 1개 이상으로 보정
+        hr_size = max(1, int(hr_size))
+
         self.store = CustomModbusSlaveContext(
             signals=self.signals,
             di=ModbusSequentialDataBlock(0, [0] * 100),   # Discrete Inputs
             co=ModbusSequentialDataBlock(0, [0] * 100),   # Coils
-            hr=ModbusSequentialDataBlock(0, [0] * hr_size),   # Holding Registers (0-199 + offset)
+            hr=ModbusSequentialDataBlock(0, [0] * hr_size),   # Holding Registers (0 ~ hr_size-1)
             ir=ModbusSequentialDataBlock(0, [0] * 100),   # Input Registers
-            hr_offset=hr_offset                           # Holding Register Offset
+            hr_offset=0                                   # 전역 오프셋 미사용
         )
         self.context = ModbusServerContext(slaves=self.store, single=True)
-        
-        # 레지스터 초기화 확인
-        logger.info("Modbus store initialized with:")
-        logger.info(f"Coils: {self.store.getValues(1, 0, 100)}")
-        logger.info(f"Discrete Inputs: {self.store.getValues(2, 0, 100)}")
-        logger.info(f"Holding Registers: {self.store.getValues(3, 0, 100)}")
-        logger.info(f"Input Registers: {self.store.getValues(4, 0, 100)}")
+
+        logger.info(f"Modbus store initialized. Holding register size: {hr_size}")
     
     def load_stylesheet(self):
         """스타일시트 로드 및 적용"""
@@ -1311,13 +855,10 @@ class ModbusServerSimulator(QMainWindow):
                 with open(style_path, "r") as f:
                     self.setStyleSheet(f.read())
                     logger.info("스타일시트가 성공적으로 적용되었습니다.")
-                    print("스타일시트가 성공적으로 적용되었습니다.")
             else:
                 logger.warning(f"스타일시트 파일을 찾을 수 없습니다: {style_path}")
-                print(f"스타일시트 파일을 찾을 수 없습니다: {style_path}")
         except Exception as e:
             logger.error(f"스타일시트 적용 중 오류 발생: {e}")
-            print(f"스타일시트 적용 중 오류 발생: {e}")
             
     def apply_neumorphism_effect(self, widget):
         """뉴모피즘 효과를 적용하는 헬퍼 함수"""
@@ -1334,8 +875,18 @@ class ModbusServerSimulator(QMainWindow):
             # Qt.CheckState.Checked는 값이 2
             is_checked = (state == Qt.CheckState.Checked.value)  # 2
             self.register_groups[register_type].setVisible(is_checked)
-            print(f"Toggle {register_type}: {'visible' if is_checked else 'hidden'}")
-    
+            logger.debug(f"Toggle {register_type}: {'visible' if is_checked else 'hidden'}")
+
+    @Slot()
+    def toggle_register_panel(self):
+        """레지스터 표시 설정(체크박스) 패널을 펼치거나 접는다."""
+        self._register_panel_open = not self._register_panel_open
+        self.register_control_panel.setVisible(self._register_panel_open)
+        # 버튼 화살표 표시 갱신 (▸ 접힘 / ▾ 펼침)
+        self.register_panel_button.setText(
+            "▾ 레지스터 표시 설정" if self._register_panel_open else "▸ 레지스터 표시 설정"
+        )
+
     def init_ui(self):
         """Initialize the user interface"""
         # 전체 애플리케이션 창의 최소 크기 설정
@@ -1345,7 +896,7 @@ class ModbusServerSimulator(QMainWindow):
         main_layout = QVBoxLayout(central_widget)
         
         # 타이틀 레이블
-        title_label = QLabel("Modbus TCP Server Simulator")
+        title_label = QLabel(f"Modbus TCP Server Simulator  v{APP_VERSION}")
         title_label.setObjectName("title_label")
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(title_label)
@@ -1369,24 +920,17 @@ class ModbusServerSimulator(QMainWindow):
         conn_layout.addWidget(QLabel("Port:"))
         self.port_edit = QLineEdit("502")
         self.port_edit.setValidator(QIntValidator(1, 65535))  # 포트 번호 유효성 검사 추가
-        self.port_edit.setStyleSheet("border: 1px solid #bec8d1; border-radius: 10px;")
+        self.port_edit.setStyleSheet("border: 1px solid #334155; border-radius: 10px;")
         conn_layout.addWidget(self.port_edit)
         
         # Server address
         conn_layout.addWidget(QLabel("Server Address:"))
         self.address_edit = QLineEdit("127.0.0.1")
-        self.address_edit.setStyleSheet("border: 1px solid #bec8d1; border-radius: 10px;")
+        self.address_edit.setStyleSheet("border: 1px solid #334155; border-radius: 10px;")
         conn_layout.addWidget(self.address_edit)
         
-        # Holding Register Offset
-        conn_layout.addWidget(QLabel("HR Offset:"))
-        self.hr_offset_edit = QLineEdit("0")
-        self.hr_offset_edit.setValidator(QIntValidator(0, 9999))  # 오프셋 유효성 검사 추가
-        self.hr_offset_edit.setStyleSheet("border: 1px solid #bec8d1; border-radius: 10px;")
-        self.hr_offset_edit.setToolTip("Holding Register 주소 오프셋 (연결 후에는 변경 불가)")
-        self.hr_offset_edit.setFixedWidth(80)  # 너비 고정
-        conn_layout.addWidget(self.hr_offset_edit)
-        
+        # (HR Offset 전역 입력 필드는 제거됨 — 홀딩 레지스터 그룹의 컬럼별 시작 주소로 대체)
+
         # Connect/Disconnect button
         self.connect_button = QPushButton("Connect")
         self.connect_button.setObjectName("connect_button")
@@ -1404,7 +948,7 @@ class ModbusServerSimulator(QMainWindow):
         self.status_label = QLabel("Server not running")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.status_label.setObjectName("status_label")
-        self.status_label.setStyleSheet("color: #757575; font-weight: bold;")
+        self.status_label.setStyleSheet("color: #94a3b8; font-weight: bold;")
         main_layout.addWidget(self.status_label)
         
         # Server options
@@ -1419,47 +963,68 @@ class ModbusServerSimulator(QMainWindow):
         self.listen_only_checkbox = QCheckBox("Set server listen only")
         self.listen_only_checkbox.setEnabled(False)  # Not implemented yet
         options_layout.addWidget(self.listen_only_checkbox)
-        
+
         options_layout.addStretch()
+
+        # 시퀀스 시뮬레이션 창 열기 버튼
+        self.sequence_button = QPushButton("시퀀스 시뮬레이션")
+        self.sequence_button.setObjectName("sequence_button")
+        self.sequence_button.setToolTip("노드 그래프로 신호 전송/대기/분기 시퀀스를 편집·실행합니다")
+        self.sequence_button.clicked.connect(self.open_sequence_window)
+        options_layout.addWidget(self.sequence_button)
+
         main_layout.addLayout(options_layout)
         
-        # 레지스터 그룹 표시/숨김 기능을 위한 컨트롤 패널
-        control_layout = QHBoxLayout()
+        # 레지스터 표시 설정 패널을 펼치고 접는 토글 버튼 (기본은 접힘)
+        self.register_panel_button = QPushButton("▸ 레지스터 표시 설정")
+        self.register_panel_button.setObjectName("register_panel_button")
+        self.register_panel_button.setToolTip("표시할 레지스터 종류를 선택하는 패널을 열고 닫습니다")
+        self.register_panel_button.clicked.connect(self.toggle_register_panel)
+        panel_button_layout = QHBoxLayout()
+        panel_button_layout.setContentsMargins(10, 0, 10, 0)
+        panel_button_layout.addWidget(self.register_panel_button)
+        panel_button_layout.addStretch(1)
+        main_layout.addLayout(panel_button_layout)
+
+        # 레지스터 그룹 표시/숨김 체크박스 (접을 수 있는 패널 안에 배치)
+        self.register_control_panel = QWidget()
+        control_layout = QHBoxLayout(self.register_control_panel)
         control_layout.setContentsMargins(10, 5, 10, 5)
-        
-        # 레지스터 그룹 표시/숨김 체크박스
+
         self.register_checkboxes = {}
         # Initialize register_groups dictionary before creating checkboxes
         self.register_groups = {}
         for reg_type, reg_name in [
-            ("coils", "Coils"), 
-            ("discrete_inputs", "Discrete Inputs"), 
-            ("holding_registers", "Holding Registers"), 
+            ("coils", "Coils"),
+            ("discrete_inputs", "Discrete Inputs"),
+            ("holding_registers", "Holding Registers"),
             ("input_registers", "Input Registers")
         ]:
             checkbox = QCheckBox(reg_name)
             checkbox.setObjectName(f"{reg_type}_checkbox")
-            
+
             # 체크박스와 토글 함수 연결 - 클로저 문제 해결
             # 정적 메소드를 생성하여 연결
             def create_toggle_handler(r_type):
                 def toggle_handler(state):
                     self.toggle_register_group(r_type, state)
                 return toggle_handler
-                
+
             checkbox.stateChanged.connect(create_toggle_handler(reg_type))
             control_layout.addWidget(checkbox)
             self.register_checkboxes[reg_type] = checkbox
-            
+
             # 초기 상태 설정 - holding register만 visible
             # holding_registers만 체크하고 나머지는 체크 해제
             if reg_type in ["holding_registers"]:
                 checkbox.setChecked(True)  # visible 상태
             else:
                 checkbox.setChecked(False)  # hidden 상태
-        
-        # 체크박스 영역 추가
-        main_layout.addLayout(control_layout)
+
+        # 체크박스 패널 추가 (기본적으로 숨김 상태)
+        self._register_panel_open = False
+        self.register_control_panel.setVisible(False)
+        main_layout.addWidget(self.register_control_panel)
         
         # Register tabs
         self.registers_layout = QHBoxLayout()
@@ -1542,6 +1107,53 @@ class ModbusServerSimulator(QMainWindow):
         # 그룹박스에 뉴모피즘 효과 추가
         self.apply_neumorphism_effect(group)
         
+        # 홀딩 레지스터: 컬럼별 시작 주소/개수 설정 바 추가
+        if register_type == "holding_registers":
+            config_layout = QHBoxLayout()
+
+            config_layout.addWidget(QLabel("컬럼1 시작:"))
+            self.c1_start_edit = QLineEdit(str(self.holding_columns[0][0]))
+            self.c1_start_edit.setValidator(QIntValidator(0, 65535))
+            self.c1_start_edit.setFixedWidth(60)
+            self.c1_start_edit.setStyleSheet("border: 1px solid #334155; border-radius: 10px;")
+            config_layout.addWidget(self.c1_start_edit)
+
+            config_layout.addWidget(QLabel("개수:"))
+            self.c1_count_edit = QLineEdit(str(self.holding_columns[0][1]))
+            self.c1_count_edit.setValidator(QIntValidator(1, 2000))
+            self.c1_count_edit.setFixedWidth(55)
+            self.c1_count_edit.setStyleSheet("border: 1px solid #334155; border-radius: 10px;")
+            config_layout.addWidget(self.c1_count_edit)
+
+            config_layout.addWidget(QLabel("컬럼2 시작:"))
+            self.c2_start_edit = QLineEdit(str(self.holding_columns[1][0]))
+            self.c2_start_edit.setValidator(QIntValidator(0, 65535))
+            self.c2_start_edit.setFixedWidth(60)
+            self.c2_start_edit.setStyleSheet("border: 1px solid #334155; border-radius: 10px;")
+            config_layout.addWidget(self.c2_start_edit)
+
+            config_layout.addWidget(QLabel("개수:"))
+            self.c2_count_edit = QLineEdit(str(self.holding_columns[1][1]))
+            self.c2_count_edit.setValidator(QIntValidator(1, 2000))
+            self.c2_count_edit.setFixedWidth(55)
+            self.c2_count_edit.setStyleSheet("border: 1px solid #334155; border-radius: 10px;")
+            config_layout.addWidget(self.c2_count_edit)
+
+            apply_columns_button = QPushButton("적용")
+            apply_columns_button.setMinimumWidth(50)
+            apply_columns_button.setToolTip("컬럼 시작 주소/개수를 적용합니다 (서버 실행 중에는 변경 불가)")
+            apply_columns_button.clicked.connect(self.on_apply_columns_clicked)
+            config_layout.addWidget(apply_columns_button)
+            config_layout.addStretch(1)
+            layout.addLayout(config_layout)
+
+            # 서버 실행 중 비활성화할 컬럼 설정 위젯 모음
+            self.column_config_edits = [
+                self.c1_start_edit, self.c1_count_edit,
+                self.c2_start_edit, self.c2_count_edit,
+                apply_columns_button,
+            ]
+
         # 홀딩 레지스터에 테스트 입력 필드 추가
         if register_type == "holding_registers":
             test_layout = QHBoxLayout()
@@ -1551,7 +1163,7 @@ class ModbusServerSimulator(QMainWindow):
             self.test_input = QLineEdit()
             self.test_input.setPlaceholderText("테스트 값 입력 (16진수)")
             self.test_input.setMinimumWidth(80)  # 입력 필드 최소 너비 설정
-            self.test_input.setStyleSheet("border: 1px solid #bec8d1; border-radius: 10px;")
+            self.test_input.setStyleSheet("border: 1px solid #334155; border-radius: 10px;")
             
             # 16진수 입력 검증기 설정
             hex_validator = QRegularExpressionValidator(QRegularExpression("[0-9A-Fa-f]{0,4}"))
@@ -1568,30 +1180,182 @@ class ModbusServerSimulator(QMainWindow):
             
             test_layout.addWidget(self.test_input)
             test_layout.addWidget(test_button)
+
+            # 메모 전체 삭제 버튼
+            clear_memo_button = QPushButton("메모 전체 삭제")
+            clear_memo_button.setObjectName("clear_memo_button")
+            clear_memo_button.setMinimumWidth(110)
+            clear_memo_button.setToolTip("모든 홀딩 레지스터의 메모를 한 번에 삭제합니다")
+            clear_memo_button.clicked.connect(self.clear_all_memos)
+            test_layout.addWidget(clear_memo_button)
+
             layout.addLayout(test_layout)
-        
+
         # Create register widget
-        register_widget = RegisterWidget(register_type)
+        if register_type == "holding_registers":
+            register_widget = RegisterWidget(register_type, columns=self.holding_columns)
+        else:
+            register_widget = RegisterWidget(register_type)
         register_widget.value_changed.connect(self.on_register_value_changed)
         # Connect memo_changed signal to handle memo auto-save
         register_widget.memo_changed.connect(self.on_memo_changed)
-        
+
         # Create scroll area
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(register_widget)
         scroll.setObjectName(f"{register_type}_scroll")
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)  # 테두리 제거
-        
+
+        # 홀딩 레지스터는 컬럼 재구성을 위해 스크롤 영역 참조를 보관
+        if register_type == "holding_registers":
+            self.holding_scroll = scroll
+
         # Add to layout
         layout.addWidget(scroll)
         group.setLayout(layout)
         
         # Store reference to widget
         setattr(self, f"{register_type}_widget", register_widget)
-        
+
         return group
-        
+
+    def get_columns_from_ui(self):
+        """컬럼 설정 입력값을 읽어 검증한다.
+
+        Returns:
+            tuple: (columns, error_message). 검증 실패 시 columns는 None이고
+                error_message에 사유 문자열이 담긴다. 성공 시 error_message는 None.
+                columns는 [(start, count), (start, count)] 형식.
+        """
+        def _parse(edit, default):
+            try:
+                return int(edit.text())
+            except (ValueError, AttributeError):
+                return default
+
+        c1_start = _parse(self.c1_start_edit, 0)
+        c1_count = _parse(self.c1_count_edit, 100)
+        c2_start = _parse(self.c2_start_edit, 100)
+        c2_count = _parse(self.c2_count_edit, 100)
+
+        columns = [(c1_start, c1_count), (c2_start, c2_count)]
+
+        for start, count in columns:
+            if count < 1:
+                return None, "각 컬럼의 레지스터 개수는 1 이상이어야 합니다."
+            if start < 0 or start + count > 65536:
+                return None, "주소 범위는 0 ~ 65535 이내여야 합니다."
+
+        # 두 컬럼의 주소 범위가 겹치는지 검사
+        s1, c1 = columns[0]
+        s2, c2 = columns[1]
+        if max(s1, s2) < min(s1 + c1, s2 + c2):
+            return None, "두 컬럼의 주소 범위가 겹칩니다. 시작 주소 또는 개수를 조정하세요."
+
+        return columns, None
+
+    def rebuild_holding_widget(self, columns):
+        """주어진 컬럼 설정으로 홀딩 레지스터 위젯을 재생성한다.
+
+        Args:
+            columns (list): [(start, count), ...] 형식의 컬럼 설정.
+        """
+        self.holding_columns = columns
+        new_widget = RegisterWidget("holding_registers", columns=columns)
+        new_widget.value_changed.connect(self.on_register_value_changed)
+        new_widget.memo_changed.connect(self.on_memo_changed)
+
+        # QScrollArea.setWidget()은 기존 위젯을 자동으로 삭제한다.
+        self.holding_scroll.setWidget(new_widget)
+        self.holding_registers_widget = new_widget
+        logger.info(f"홀딩 레지스터 위젯 재구성 완료: {columns}")
+
+    @Slot()
+    def on_apply_columns_clicked(self):
+        """'적용' 버튼: 입력한 컬럼 설정을 검증·적용하고 저장값을 다시 로드한다."""
+        if self.server_running:
+            QMessageBox.warning(self, "변경 불가", "서버 실행 중에는 컬럼 설정을 변경할 수 없습니다.")
+            return
+
+        columns, error = self.get_columns_from_ui()
+        if error:
+            QMessageBox.warning(self, "설정 오류", error)
+            return
+
+        self.rebuild_holding_widget(columns)
+        # 변경된 주소 범위에 맞춰 저장소 크기를 재설정한 뒤 저장값/메모 로드
+        hr_size = max(start + count for start, count in columns)
+        self.init_modbus_store(hr_size)
+        self.load_registers_from_file()
+        # 변경된 컬럼 설정을 즉시 저장
+        self.save_registers_to_file()
+        QMessageBox.information(self, "적용 완료", "컬럼 설정이 적용되었습니다.")
+
+    @Slot()
+    def clear_all_memos(self):
+        """모든 홀딩 레지스터 메모를 삭제한다."""
+        if not hasattr(self, 'holding_registers_widget'):
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "메모 전체 삭제",
+            "모든 홀딩 레지스터 메모를 삭제하시겠습니까?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # 200여 회의 저장 예약이 발생하지 않도록 시그널을 차단하고 한 번만 저장
+        for memo_edit in self.holding_registers_widget.memo_edits.values():
+            old_state = memo_edit.blockSignals(True)
+            memo_edit.clear()
+            memo_edit.blockSignals(old_state)
+
+        self.save_registers_to_file()
+        logger.info("모든 홀딩 레지스터 메모 삭제 완료")
+
+    def set_column_config_enabled(self, enabled):
+        """컬럼 설정 입력 위젯들의 활성화 상태를 변경한다.
+
+        Args:
+            enabled (bool): True면 활성화, False면 비활성화.
+        """
+        for widget in getattr(self, "column_config_edits", []):
+            widget.setEnabled(enabled)
+
+    def restore_saved_state(self):
+        """앱 시작 시 저장된 컬럼 설정·레지스터 값·메모를 복원한다."""
+        config = None
+        try:
+            if os.path.exists(self.register_file):
+                with open(self.register_file, 'r') as f:
+                    data = json.load(f)
+                saved = data.get("holding_columns")
+                if saved and len(saved) >= 2:
+                    config = [
+                        (int(saved[0][0]), int(saved[0][1])),
+                        (int(saved[1][0]), int(saved[1][1])),
+                    ]
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as e:
+            logger.error(f"저장된 컬럼 설정 로드 실패, 기본값 사용: {e}")
+            config = None
+
+        # 저장된 컬럼 설정이 현재 설정과 다르면 입력창과 위젯을 갱신
+        if config and config != self.holding_columns:
+            self.c1_start_edit.setText(str(config[0][0]))
+            self.c1_count_edit.setText(str(config[0][1]))
+            self.c2_start_edit.setText(str(config[1][0]))
+            self.c2_count_edit.setText(str(config[1][1]))
+            self.rebuild_holding_widget(config)
+
+        # 저장소 크기를 컬럼 범위에 맞춘 뒤 값·메모 로드
+        hr_size = max((start + count for start, count in self.holding_columns), default=200)
+        self.init_modbus_store(hr_size)
+        self.load_registers_from_file()
+
     def update_from_context(self):
         """Update UI from Modbus context"""
         if not self.server_running:
@@ -1633,26 +1397,25 @@ class ModbusServerSimulator(QMainWindow):
                             discrete_widget.values[addr] = value
                 except Exception as e:
                     logger.warning(f"Error getting discrete input values: {e}")
-                    print(f"Error getting discrete input values: {e}")
             
-            # Update holding registers
+            # Update holding registers - 컬럼별 절대 주소 범위를 순회
             if hasattr(self, 'holding_registers_widget'):
                 holding_widget = self.holding_registers_widget
                 try:
-                    hr_register_count = 200
-                    hr_values = self.store.getValues(3, 0, hr_register_count)
-                    for addr in range(min(hr_register_count, len(hr_values))):
-                        if addr in holding_widget.line_edits:
+                    for start, count in self.holding_columns:
+                        hr_values = self.store.getValues(3, start, count)
+                        for i in range(min(count, len(hr_values))):
+                            addr = start + i
+                            if addr not in holding_widget.line_edits:
+                                continue
                             # Skip update if this widget has focus (user is editing)
                             if holding_widget.line_edits[addr].hasFocus():
-                                logger.debug(f"Skipping update for holding register {addr} - user is editing")
-                                print(f"Skipping update for holding register {addr} - user is editing")
                                 continue
-                                
-                            value = hr_values[addr]
+
+                            value = hr_values[i]
                             # Format value as 4-digit hex string
                             hex_value = f"{value:04X}"
-                            
+
                             # Only update if value has actually changed
                             current_text = holding_widget.line_edits[addr].text()
                             if current_text != hex_value:
@@ -1674,7 +1437,6 @@ class ModbusServerSimulator(QMainWindow):
                             # Skip update if this widget has focus (user is editing)
                             if input_widget.line_edits[addr].hasFocus():
                                 logger.debug(f"Skipping update for input register {addr} - user is editing")
-                                print(f"Skipping update for input register {addr} - user is editing")
                                 continue
                                 
                             value = ir_values[addr]
@@ -1691,10 +1453,8 @@ class ModbusServerSimulator(QMainWindow):
                                 input_widget.values[addr] = hex_value
                 except Exception as e:
                     logger.warning(f"Error getting input register values: {e}")
-                    print(f"Error getting input register values: {e}")
         except Exception as e:
             logger.error(f"Error updating UI from context: {e}")
-            print(f"Error updating UI from context: {e}")
     
     def update_context_from_ui(self):
         """Update Modbus context from UI values"""
@@ -1730,12 +1490,10 @@ class ModbusServerSimulator(QMainWindow):
                         # logger.info(f"Updated holding register {addr} to {int_value} (hex: {value})")
                     except ValueError as e:
                         logger.error(f"Invalid hex value for register {addr}: {value}, error: {e}")
-                        print(f"Invalid hex value for register {addr}: {value}, error: {e}")
                         # Set to 0 if invalid
                         self.store.setValues(3, addr, [0])
         except Exception as e:
             logger.error(f"Error updating context from UI: {e}")
-            print(f"Error updating context from UI: {e}")
     @Slot(str, int, int)
     def on_register_value_changed(self, register_type, addr, value):
         """Handle register value changed signal"""
@@ -1755,12 +1513,57 @@ class ModbusServerSimulator(QMainWindow):
                 self.store.setValues(function_code, addr, [value])
             
             logger.info(f"Register value changed: {register_type}[{addr}] = {value}")
-            print(f"Register value changed: {register_type}[{addr}] = {value}")
             # 레지스터 값이 변경될 때마다 파일에 저장
             self.save_registers_to_file()
         except Exception as e:
             logger.error(f"Error in on_register_value_changed: {e}")
-            
+
+    # --- 시퀀스 엔진 연동 어댑터 ---
+    def read_register(self, reg_type: str, addr: int) -> int:
+        """시퀀스 엔진용: 레지스터 타입/주소의 현재 값을 store 에서 읽는다.
+
+        Args:
+            reg_type: "coils"|"discrete_inputs"|"holding_registers"|"input_registers".
+            addr: 레지스터 주소.
+
+        Returns:
+            정수 값(읽기 실패 시 0).
+        """
+        fc = {"coils": 1, "discrete_inputs": 2, "holding_registers": 3, "input_registers": 4}.get(reg_type)
+        if fc is None:
+            logger.error(f"read_register: 알 수 없는 레지스터 타입 {reg_type}")
+            return 0
+        try:
+            return int(self.store.getValues(fc, addr, 1)[0])
+        except (IndexError, ValueError, TypeError) as exc:
+            logger.error(f"read_register 실패 ({reg_type}[{addr}]): {exc}")
+            return 0
+
+    def engine_write(self, reg_type: str, addr: int, value: int) -> None:
+        """시퀀스 엔진용: 레지스터에 값을 쓴다(UI/저장과 동기화).
+
+        on_register_value_changed 로 위임하여 외부 클라이언트 쓰기로 오탐되지
+        않게 하고, 해당 위젯 표시도 즉시 갱신한다.
+        """
+        self.on_register_value_changed(reg_type, addr, value)
+        widget = getattr(self, f"{reg_type}_widget", None)
+        if widget is not None:
+            try:
+                widget.update_value(addr, value)
+            except (KeyError, AttributeError) as exc:
+                logger.debug(f"engine_write 위젯 갱신 생략 ({reg_type}[{addr}]): {exc}")
+
+    @Slot()
+    def open_sequence_window(self):
+        """시퀀스 시뮬레이션 창을 연다(단일 인스턴스 재사용)."""
+        from sequence.sequence_window import SequenceWindow
+
+        if getattr(self, "_sequence_window", None) is None:
+            self._sequence_window = SequenceWindow(self.read_register, self.engine_write, parent=self)
+        self._sequence_window.show()
+        self._sequence_window.raise_()
+        self._sequence_window.activateWindow()
+
     def on_memo_changed(self, register_type, addr, memo_text):
         """메모 입력 필드 변경 처리"""
         if register_type == "holding_registers":
@@ -1784,7 +1587,9 @@ class ModbusServerSimulator(QMainWindow):
                 "discrete_inputs": {},
                 "holding_registers": {},
                 "input_registers": {},
-                "holding_registers_memos": {}  # 홀딩 레지스터 메모 추가
+                "holding_registers_memos": {},  # 홀딩 레지스터 메모 추가
+                # 홀딩 레지스터 컬럼 설정 [(시작주소, 개수), ...] 저장
+                "holding_columns": [list(col) for col in self.holding_columns],
             }
             
             # 코일 값 저장
@@ -1818,17 +1623,14 @@ class ModbusServerSimulator(QMainWindow):
                 json.dump(register_data, f, indent=4)
                 
             logger.info(f"Register values saved to {self.register_file}")
-            print(f"Register values saved to {self.register_file}")
         except Exception as e:
             logger.error(f"Error saving registers to file: {e}")
-            print(f"Error saving registers to file: {e}")
             
     def load_registers_from_file(self):
         """파일에서 레지스터 값 로드"""
         try:
             if not os.path.exists(self.register_file):
                 logger.info(f"Register file {self.register_file} does not exist. Using default values.")
-                print(f"Register file {self.register_file} does not exist. Using default values.")
                 return
                 
             with open(self.register_file, 'r') as f:
@@ -1875,7 +1677,6 @@ class ModbusServerSimulator(QMainWindow):
                             self.store.setValues(3, addr, [int_value])
                         except ValueError:
                             logger.error(f"Invalid hex value for register {addr}: {hex_value}")
-                            print(f"Invalid hex value for register {addr}: {hex_value}")                
                 # 홀딩 레지스터 메모 로드
                 if "holding_registers_memos" in register_data:
                     for addr_str, memo_text in register_data["holding_registers_memos"].items():
@@ -1905,10 +1706,8 @@ class ModbusServerSimulator(QMainWindow):
                             self.store.setValues(4, addr, [0])
             
             logger.info(f"Register values loaded from {self.register_file}")
-            print(f"Register values loaded from {self.register_file}")
         except Exception as e:
             logger.error(f"Error loading registers from file: {e}")
-            print(f"Error loading registers from file: {e}")
     
     def toggle_server(self):
         """Start or stop the server"""
@@ -1918,16 +1717,21 @@ class ModbusServerSimulator(QMainWindow):
             self.connect_button.setObjectName("connect_button")
             self.connect_button.setIcon(self.dynamic_icons["start"])
         else:
-            self.start_server()
-            # 버튼 텍스트는 서버가 실제로 시작된 후에 변경됨
-            self.connect_button.setText("Disconnect")
-            self.connect_button.setObjectName("disconnect_button")
-            self.connect_button.setIcon(self.dynamic_icons["stop"])
-            
+            # 설정 검증 실패 등으로 서버 시작이 시작되지 않으면 버튼 상태를 바꾸지 않는다.
+            if self.start_server():
+                self.connect_button.setText("Disconnect")
+                self.connect_button.setObjectName("disconnect_button")
+                self.connect_button.setIcon(self.dynamic_icons["stop"])
+
     def start_server(self):
-        """Start the Modbus server"""
+        """Modbus 서버를 시작한다.
+
+        Returns:
+            bool: 서버 시작 절차를 정상적으로 시작했으면 True, 설정 오류나 예외로
+                시작하지 못했으면 False.
+        """
         if self.server_thread and self.server_thread.running:
-            return
+            return True
         
         try:
             import traceback
@@ -1941,41 +1745,40 @@ class ModbusServerSimulator(QMainWindow):
             # 502번 포트는 관리자 권한 필요 알림
             if port == 502 and os.name == 'nt':  # Windows에서
                 logger.warning("Port 502 typically requires administrator privileges on Windows")
-                print("Port 502 typically requires administrator privileges on Windows")
                 # 관리자 권한 검사 (Windows)
                 try:
                     import ctypes
                     is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
                     if not is_admin:
                         logger.warning("Not running as administrator - port 502 may fail to bind")
-                        print("Not running as administrator - port 502 may fail to bind")
                         # 관리자 권한 없이 502 포트 사용 시 경고 메시지 표시
                         self.status_label.setText("⚠️ Warning: Port 502 may require administrator privileges")
                         self.status_label.setStyleSheet("color: #FFC107; font-weight: bold;") # 노란색 경고색
                 except Exception as e:
                     logger.warning(f"Could not check admin status: {e}")
             
-            # 홀딩 레지스터 오프셋 값 가져오기
-            try:
-                hr_offset = int(self.hr_offset_edit.text())
-            except ValueError:
-                hr_offset = 0
-                self.hr_offset_edit.setText("0")
-                logger.warning("오프셋 값이 유효하지 않아 0으로 초기화합니다.")
-                print("오프셋 값이 유효하지 않아 0으로 초기화합니다.")
-            
+            # 홀딩 레지스터 컬럼 설정 읽기 및 검증
+            columns, config_error = self.get_columns_from_ui()
+            if config_error:
+                QMessageBox.warning(self, "설정 오류", config_error)
+                self.status_label.setText(f"설정 오류: {config_error}")
+                self.status_label.setStyleSheet("color: #F44336; font-weight: bold;")
+                return False
+
+            # 설정이 변경되었으면 위젯을 재구성
+            if columns != self.holding_columns:
+                self.rebuild_holding_widget(columns)
+
+            # 컬럼 범위를 모두 포함하도록 저장소 크기 계산
+            hr_size = max(start + count for start, count in columns)
+
             # Reset the store to ensure we're starting fresh
             # This helps prevent issues with stale data or callbacks
-            # Pass the holding register offset to the store
-            self.init_modbus_store(hr_offset)
-            
+            self.init_modbus_store(hr_size)
+
             # 저장된 레지스터 값 로드
             self.load_registers_from_file()
-            
-            # 홀딩 레지스터 오프셋 적용
-            if hasattr(self, 'holding_registers_widget'):
-                self.holding_registers_widget.set_address_offset(hr_offset)
-            
+
             # 서버 시작 시도 중임을 표시
             self.status_label.setText(f"Starting server at {address}:{port}...")
             self.status_label.setStyleSheet("color: #2196F3; font-weight: bold;")  # 파란색
@@ -1987,14 +1790,13 @@ class ModbusServerSimulator(QMainWindow):
             # Create and start server thread
             self.server_thread = ModbusServerThread(address, port, self.context, self.signals)
             self.server_thread.start()
-            
+
             # Log the attempt
-            logger.info(f"Attempting to start server at {address}:{port} with HR offset {hr_offset}")
-            print(f"Attempting to start server at {address}:{port} with HR offset {hr_offset}")
+            logger.info(f"Attempting to start server at {address}:{port} with holding columns {self.holding_columns}")
+            return True
         except Exception as e:
             logger.error(f"Failed to start server: {e}")
             logger.error(f"Traceback: {traceback.format_exc()}")
-            print(f"Failed to start server: {e}")
             
             # 오류 메시지 생성
             error_msg = str(e)
@@ -2023,52 +1825,25 @@ class ModbusServerSimulator(QMainWindow):
                 self.connect_button.setIcon(self.dynamic_icons["start"]),
                 self.connect_button.setObjectName("connect_button")
             })
-    
+            return False
+
     def stop_server(self):
-        """Stop the Modbus server"""
-        if self.server_thread and self.server_thread.running:
-            # Call stop method to trigger server shutdown
+        """서버를 정상 종료한다. 종료 후에는 다시 연결을 시도할 수 있다."""
+        if self.server_thread and self.server_thread.isRunning():
+            # 서버 스레드에 정상 종료 요청 (asyncio 루프에서 ServerAsyncStop 실행)
             self.server_thread.stop()
-            
-            # Give the server a moment to shut down
-            for _ in range(20):  # Try for up to 2 seconds
-                if not self.server_thread.running:
-                    break
-                time.sleep(0.1)
-            
-            # Force thread termination if it's still running
-            import sys
-            if self.server_thread and self.server_thread.running and sys.platform == 'win32':
-                try:
-                    import ctypes
-                    if hasattr(self.server_thread, '_thread_id'):
-                        thread_id = self.server_thread._thread_id
-                    else:
-                        thread_id = None
-                    if thread_id is not None:
-                        res = ctypes.pythonapi.PyThreadState_SetAsyncExc(thread_id, 
-                              ctypes.py_object(SystemExit))
-                        if res > 1:
-                            ctypes.pythonapi.PyThreadState_SetAsyncExc(thread_id, 0)
-                            logger.error('Failed to terminate thread properly')
-                except Exception as e:
-                    logger.error(f"Error forcefully stopping thread: {e}")
-            
-            # QThread 종료 예외 방지를 위해 wait() 호출
-            try:
-                if self.server_thread and self.server_thread.isRunning():
-                    logger.info("Waiting for server thread to finish...")
-                    self.server_thread.wait(2000)  # 최대 2초 대기
-                    if self.server_thread.isRunning():
-                        logger.warning("Thread still running after wait period")
-            except Exception as e:
-                logger.error(f"Error waiting for thread: {e}")
-            
-            # Clean up thread reference
-            self.server_thread = None
-            self.server_running = False
-            self.connect_button.setText("Connect")
-            logger.info("Server stopped from UI")
+
+            # 혹시 스레드가 아직 살아 있으면 한 번 더 대기
+            if self.server_thread.isRunning():
+                self.server_thread.wait(2000)
+                if self.server_thread.isRunning():
+                    logger.warning("서버 스레드가 종료되지 않았습니다.")
+
+        # 스레드 참조 정리 (다음 연결을 위해 새 스레드를 생성한다)
+        self.server_thread = None
+        self.server_running = False
+        self.connect_button.setText("Connect")
+        logger.info("Server stopped from UI")
     
     @Slot()
     def on_server_started(self):
@@ -2079,10 +1854,10 @@ class ModbusServerSimulator(QMainWindow):
         self.connect_button.setIcon(self.stop_icon)
         self.connect_button.setStyleSheet("")
         
-        # 서버 시작 후 주소, 포트, 오프셋 입력 비활성화
+        # 서버 시작 후 주소, 포트 입력 비활성화 및 컬럼 설정 잠금
         self.address_edit.setReadOnly(True)
         self.port_edit.setReadOnly(True)
-        self.hr_offset_edit.setReadOnly(True)
+        self.set_column_config_enabled(False)
         
         # 상태 메시지 업데이트
         self.status_label.setText(f"Server running at {self.address_edit.text()}:{self.port_edit.text()}")
@@ -2099,26 +1874,16 @@ class ModbusServerSimulator(QMainWindow):
         # 서버 중지 시 시작 아이콘으로 변경
         self.connect_button.setIcon(self.start_icon)
         
-        # 서버 중지 후 주소, 포트, 오프셋 입력 다시 활성화
+        # 서버 중지 후 주소, 포트 입력 다시 활성화 및 컬럼 설정 잠금 해제
         self.address_edit.setReadOnly(False)
         self.port_edit.setReadOnly(False)
-        self.hr_offset_edit.setReadOnly(False)
-        
+        self.set_column_config_enabled(True)
+
         # 상태바 초기화
         self.statusBar().clearMessage()
-        
-        # 오프셋 값이 있는 경우 상태 표시
-        try:
-            hr_offset = int(self.hr_offset_edit.text())
-            if hr_offset > 0:
-                self.status_label.setText(f"Server stopped. HR offset: {hr_offset}")
-                logger.info(f"Server stopped with HR offset: {hr_offset}")
-            else:
-                self.status_label.setText("Server stopped.")
-                logger.info("Server stopped.")
-        except ValueError:
-            self.status_label.setText("Server stopped.")
-            logger.info("Server stopped.")
+
+        self.status_label.setText("Server stopped.")
+        logger.info("Server stopped.")
         
         # QStatusBar에서 모든 QLabel 위젯 제거
         status_bar_widgets = []
@@ -2216,29 +1981,19 @@ class ModbusServerSimulator(QMainWindow):
             elif function_code == 6 or function_code == 16:  # Write Holding Register(s)
                 register_type = "holding_registers"
                 widget = self.holding_registers_widget
-                
-                # Apply offset adjustment for holding registers
-                actual_address = address
-                if hasattr(self, 'hr_offset') and self.hr_offset > 0:
-                    # Check if address is valid after offset adjustment
-                    if address >= self.hr_offset:
-                        actual_address = address - self.hr_offset
-                        logger.info(f"Applying offset {self.hr_offset}: client address {address} -> UI address {actual_address}")
-                    else:
-                        logger.warning(f"Client address {address} is less than offset {self.hr_offset}, ignoring")
-                        return
-                
-                if actual_address in widget.line_edits:
+
+                # 컬럼별 절대 주소 방식이므로 클라이언트 주소가 곧 UI 주소이다.
+                if address in widget.line_edits:
                     # Format value as 4-digit hex string
                     hex_value = f"{value:04X}"
-                    logger.info(f"Client wrote to holding register {address} (UI addr: {actual_address}): {value} (hex: {hex_value})")
+                    logger.info(f"Client wrote to holding register {address}: {value} (hex: {hex_value})")
                     # Block signals temporarily to prevent feedback loop
-                    old_state = widget.line_edits[actual_address].blockSignals(True)
-                    widget.line_edits[actual_address].setText(hex_value)
-                    widget.line_edits[actual_address].blockSignals(old_state)
-                    widget.values[actual_address] = hex_value
+                    old_state = widget.line_edits[address].blockSignals(True)
+                    widget.line_edits[address].setText(hex_value)
+                    widget.line_edits[address].blockSignals(old_state)
+                    widget.values[address] = hex_value
                 else:
-                    logger.warning(f"No UI element found for holding register at address {actual_address} (client address: {address})")
+                    logger.warning(f"No UI element found for holding register at address {address}")
                     
             QApplication.processEvents()
         except Exception as e:
@@ -2294,19 +2049,16 @@ if __name__ == "__main__":
         # PyInstaller 번들링된 EXE에서 실행 중인 경우 처리
         if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
             logger.info("PyInstaller 번들에서 실행 중입니다.")
-            print("PyInstaller 번들에서 실행 중입니다.")
             
             # 워킹 디렉토리 설정
             # 일부 환경에서는 워킹 디렉토리가 임시 폴더로 설정되어 문제 발생
             bundle_dir = getattr(sys, '_MEIPASS', os.path.abspath(os.path.dirname(__file__)))
             os.chdir(bundle_dir)
             logger.info(f"작업 디렉토리를 번들 디렉토리로 변경: {bundle_dir}")
-            print(f"작업 디렉토리를 번들 디렉토리로 변경: {bundle_dir}")
         
         # 내장된 QSS 스타일 설정
         app.setStyleSheet(EMBEDDED_QSS_STYLE)
         logger.info("애플리케이션 수준에서 QSS 스타일 적용")
-        print("애플리케이션 수준에서 QSS 스타일 적용")
         
         # 애플리케이션 아이콘 생성 및 설정
         app_icon = QIcon()
@@ -2341,7 +2093,6 @@ if __name__ == "__main__":
         sys.exit(app.exec())
     except Exception as e:
         logger.error(f"애플리케이션 실행 중 오류 발생: {e}")
-        print(f"애플리케이션 실행 중 오류 발생: {e}")
         DEBUG_MODE = True
         if DEBUG_MODE:
             import traceback
