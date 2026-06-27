@@ -44,3 +44,33 @@ Name: "{autodesktop}\Modbus TCP Server"; Filename: "{app}\{#MyAppExeName}"; Task
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,Modbus TCP Server}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+{ 설치 전에 같은 AppId 의 기존 설치본이 있으면 조용히 제거하고 새로 설치한다. }
+const
+  UninstKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8F3C2A10-4D5E-4B7A-9C21-0A1B2C3D4E5F}_is1';
+
+function GetUninstallString(): String;
+var
+  s: String;
+begin
+  s := '';
+  if not RegQueryStringValue(HKLM, UninstKey, 'UninstallString', s) then
+    RegQueryStringValue(HKCU, UninstKey, 'UninstallString', s);
+  Result := s;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  unstr: String;
+  code: Integer;
+begin
+  if CurStep = ssInstall then
+  begin
+    unstr := RemoveQuotes(GetUninstallString());
+    if unstr <> '' then
+      { 기존 버전 무인 제거(파일이 깨끗이 정리된 뒤 새로 설치됨) }
+      Exec(unstr, '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART', '',
+           SW_HIDE, ewWaitUntilTerminated, code);
+  end;
+end;
