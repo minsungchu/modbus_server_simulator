@@ -45,12 +45,17 @@ def _load_embedded_qss():
 EMBEDDED_QSS_STYLE = _load_embedded_qss()
 
 # PySide6 관련 임포트
-from PySide6.QtCore import QObject, Signal, Slot, QTimer, Qt, QRegularExpression, QThread, QSize, QPoint, QRect
+from PySide6.QtCore import (
+    QObject, Signal, Slot, QTimer, Qt, QRegularExpression, QThread, QSize,
+    QPoint, QRect, QVariantAnimation, QEasingCurve,
+)
 from PySide6.QtGui import QIntValidator, QRegularExpressionValidator, QPixmap, QPainter, QColor, QLinearGradient, QBrush, QPen, QFont, QIcon, QPolygon
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QGroupBox, QCheckBox, QGridLayout,
-    QScrollArea, QMessageBox, QComboBox, QGraphicsDropShadowEffect
+    QScrollArea, QMessageBox, QComboBox, QGraphicsDropShadowEffect,
+    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
+    QSizePolicy,
 )
 
 # Pymodbus 관련 임포트
@@ -519,6 +524,265 @@ class RegisterWidget(QWidget):
                 logger.debug(f"Updated {self.register_type}[{addr}] to {hex_value} from server")
 
 
+# 값 변경 시 행 하이라이트(플래시) 연출 설정
+FLASH_COLOR = QColor(251, 191, 36)   # amber (#fbbf24) — "변경됨" 신호
+FLASH_MAX_ALPHA = 150                # 시작 알파(0~255)
+FLASH_DURATION_MS = 2000             # 서서히 사라지는 시간(클수록 느리게 사라짐)
+
+
+class HoldingRegisterTable(QWidget):
+    """홀딩 레지스터 맵을 표(QTableWidget) 형태로 표시·편집하는 위젯.
+
+    각 컬럼 설정(start, count)마다 Address / Value(Hex) / Memo 3개 열을 가진
+    표 하나를 만들어 좌우로 배치한다(기존 2분할 레이아웃 유지). 외부 클라이언트
+    쓰기나 시퀀스 시뮬레이션 쓰기로 값이 갱신되면 해당 행 전체가 잠깐
+    하이라이트되었다가 서서히 사라진다.
+
+    기존 RegisterWidget 과 동일한 공개 인터페이스(values/line_edits/memo_edits/
+    value_changed/memo_changed/update_value)를 제공하여 메인 창의 저장·로드·
+    동기화 코드와 그대로 호환된다.
+    """
+
+    value_changed = Signal(str, int, int)   # register_type, address, value
+    memo_changed = Signal(str, int, str)     # register_type, address, memo_text
+
+    def __init__(self, columns=None, parent=None):
+        """테이블 위젯을 초기화한다.
+
+        Args:
+            columns: [(start, count), ...] 형식의 주소 범위 설정.
+            parent: 부모 위젯.
+        """
+        super().__init__(parent)
+        self.register_type = "holding_registers"
+        self.is_bit_type = False
+        self.columns = columns if columns else [(0, 100), (100, 100)]
+
+        # 호환용 자료구조(메인 창 코드가 그대로 참조한다)
+        self.values = {}
+        self.checkboxes = {}
+        self.line_edits = {}
+        self.memo_edits = {}
+        self.address_labels = {}
+
+        # 행 하이라이트 관리용
+        self._row_of = {}          # addr -> row index
+        self._row_items = {}       # addr -> (addr_item, value_item, memo_item)
+        self._flash_anims = {}     # addr -> QVariantAnimation
+
+        self.init_ui()
+
+    def init_ui(self):
+        """컬럼 설정마다 별도의 표를 만들어 좌우로 배치한다.
+
+        각 (start, count) 범위가 하나의 테이블이 되며, 행 하이라이트와 값/메모는
+        절대 주소를 키로 관리하므로 어느 테이블에 속하든 동일하게 동작한다.
+        """
+        main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.tables = []
+        for start, count in self.columns:
+            table = self._create_column_table(start, count)
+            self.tables.append(table)
+            main_layout.addWidget(table)
+
+        # 일부 코드/도구가 단일 참조를 기대할 수 있어 첫 테이블을 노출
+        self.table = self.tables[0] if self.tables else None
+
+        # 값 입력 완료 시그널 연결
+        for addr in self.line_edits:
+            self.connect_line_edit(addr)
+
+    def _create_column_table(self, start, count):
+        """한 주소 범위(start~start+count-1)에 대한 테이블 하나를 생성한다.
+
+        Args:
+            start: 범위 시작 주소.
+            count: 범위 내 레지스터 개수.
+
+        Returns:
+            QTableWidget: 구성이 완료된 테이블.
+        """
+        table = QTableWidget(count, 3, self)
+        table.setHorizontalHeaderLabels(["Address", "Value (Hex)", "Memo"])
+        table.verticalHeader().setVisible(False)
+        # 값/메모는 셀에 올린 QLineEdit 으로 편집하므로 아이템 직접 편집은 끈다.
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+
+        for row in range(count):
+            addr = start + row
+
+            # Address 컬럼: 편집 불가 아이템
+            addr_item = QTableWidgetItem(str(addr))
+            addr_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            addr_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            table.setItem(row, 0, addr_item)
+
+            # Value 컬럼: 16진수 입력용 QLineEdit 을 셀 위젯으로 배치
+            value_item = QTableWidgetItem()
+            value_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            table.setItem(row, 1, value_item)
+            line_edit = self._create_value_edit(addr)
+            table.setCellWidget(row, 1, line_edit)
+            self.line_edits[addr] = line_edit
+            self.values[addr] = "0000"
+
+            # Memo 컬럼: 메모 입력용 QLineEdit
+            memo_item = QTableWidgetItem()
+            memo_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            table.setItem(row, 2, memo_item)
+            memo_edit = QLineEdit()
+            memo_edit.setPlaceholderText("메모 입력")
+            memo_edit.setStyleSheet("border: none; background: transparent; padding: 1px 4px;")
+            memo_edit.setMaximumHeight(20)
+            memo_edit.textChanged.connect(lambda text, a=addr: self.on_memo_changed(a, text))
+            table.setCellWidget(row, 2, memo_edit)
+            self.memo_edits[addr] = memo_edit
+
+            self._row_of[addr] = row
+            self._row_items[addr] = (addr_item, value_item, memo_item)
+
+        # 각 행 높이를 콤팩트하게 고정한다(콘텐츠 자동 높이보다 더 낮게).
+        vheader = table.verticalHeader()
+        vheader.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        vheader.setDefaultSectionSize(20)
+
+        # 표가 영역(스크롤 뷰포트)에 맞춰 세로로 늘어나도록 한다.
+        # 행이 많아 영역을 넘기면 표 자체의 세로 스크롤바가 처리한다.
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        return table
+
+    def _create_value_edit(self, address):
+        """값 입력용 QLineEdit 을 생성한다(투명 배경으로 행 하이라이트가 비치도록).
+
+        Args:
+            address: 대상 레지스터 주소.
+
+        Returns:
+            QLineEdit: 16진수 검증기가 적용된 입력 위젯.
+        """
+        line_edit = QLineEdit()
+        line_edit.setObjectName(f"register_{address}")
+        line_edit.setValidator(QRegularExpressionValidator(QRegularExpression(r'^[0-9A-Fa-f]{0,4}$')))
+        line_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # 셀 배경(하이라이트)이 비치도록 투명 처리하고 테두리는 표의 격자선에 맡긴다.
+        line_edit.setStyleSheet("border: none; background: transparent; padding: 1px 4px;")
+        line_edit.setMaximumHeight(20)
+        line_edit.textChanged.connect(lambda text, addr=address: self.on_value_changed(addr, text.upper()))
+        return line_edit
+
+    def connect_line_edit(self, addr):
+        """라인 에디트의 editingFinished 시그널을 연결한다."""
+        self.line_edits[addr].editingFinished.connect(lambda: self.on_register_changed(addr))
+
+    def on_register_changed(self, addr):
+        """입력 완료 시 4자리 16진수로 정규화하고 값 변경 시그널을 발생시킨다."""
+        text = self.line_edits[addr].text().strip()
+        try:
+            value = int(text, 16) if text else 0
+        except ValueError:
+            try:
+                value = int(self.values.get(addr, "0"), 16)
+            except (ValueError, TypeError):
+                value = 0
+
+        value = max(0, min(value, 65535))
+        hex_value = f"{value:04X}"
+        self.values[addr] = hex_value
+
+        old_state = self.line_edits[addr].blockSignals(True)
+        self.line_edits[addr].setText(hex_value)
+        self.line_edits[addr].blockSignals(old_state)
+
+        logger.info(f"Register changed: {self.register_type}[{addr}] = {hex_value} (int: {value})")
+        self.value_changed.emit(self.register_type, addr, value)
+
+    def on_value_changed(self, addr, text):
+        """타이핑 중 내부 값을 갱신한다(입력창은 건드리지 않아 커서를 유지)."""
+        hex_text = text.strip()
+        try:
+            value = int(hex_text, 16) if hex_text else 0
+        except ValueError:
+            return
+        value = max(0, min(value, 65535))
+        self.values[addr] = f"{value:04X}"
+        self.value_changed.emit(self.register_type, addr, value)
+
+    def on_memo_changed(self, addr, text):
+        """메모 변경 시그널을 발생시킨다."""
+        self.memo_changed.emit(self.register_type, addr, text)
+        logger.debug(f"Memo changed: {self.register_type}[{addr}] = {text}")
+
+    def update_value(self, addr, value):
+        """서버/시퀀스 값으로 셀을 갱신하고 해당 행을 하이라이트한다.
+
+        사용자가 직접 편집해서 발생한 변경이 아니라, 외부 클라이언트 쓰기나
+        시퀀스 시뮬레이션 쓰기로 값이 들어올 때 호출된다.
+
+        Args:
+            addr: 대상 레지스터 주소.
+            value: 정수 값.
+        """
+        if addr not in self.line_edits:
+            return
+        hex_value = f"{value:04X}"
+        # 사용자가 편집 중(포커스 보유)이 아닐 때만 표시 갱신
+        if not self.line_edits[addr].hasFocus():
+            old_state = self.line_edits[addr].blockSignals(True)
+            self.line_edits[addr].setText(hex_value)
+            self.line_edits[addr].blockSignals(old_state)
+            self.values[addr] = hex_value
+            logger.debug(f"Updated {self.register_type}[{addr}] to {hex_value} from server")
+        self.flash_row(addr)
+
+    def flash_row(self, addr):
+        """주어진 주소의 행 전체를 하이라이트했다가 서서히 사라지게 한다.
+
+        Args:
+            addr: 하이라이트할 레지스터 주소.
+        """
+        items = self._row_items.get(addr)
+        if not items:
+            return
+
+        # 진행 중인 애니메이션이 있으면 정지 후 재시작(연속 변경 대응)
+        prev = self._flash_anims.get(addr)
+        if prev is not None:
+            prev.stop()
+
+        anim = QVariantAnimation(self)
+        anim.setStartValue(1.0)
+        anim.setEndValue(0.0)
+        anim.setDuration(FLASH_DURATION_MS)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        def _apply(progress):
+            alpha = int(FLASH_MAX_ALPHA * max(0.0, float(progress)))
+            brush = QBrush(QColor(FLASH_COLOR.red(), FLASH_COLOR.green(), FLASH_COLOR.blue(), alpha))
+            for item in items:
+                item.setBackground(brush)
+
+        def _finish():
+            empty = QBrush()
+            for item in items:
+                item.setBackground(empty)
+            self._flash_anims.pop(addr, None)
+
+        anim.valueChanged.connect(_apply)
+        anim.finished.connect(_finish)
+        self._flash_anims[addr] = anim
+        anim.start()
+
+
 class ModbusServerSimulator(QMainWindow):
     """Modbus 서버 시뮬레이터 메인 애플리케이션 창
     
@@ -528,7 +792,8 @@ class ModbusServerSimulator(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"Modbus Server Simulator  v{APP_VERSION}")
-        self.resize(900, 600)
+        # 초기 창 크기: 세로를 가로의 약 1.1배로(세로로 살짝 긴 형태)
+        self.resize(900, int(900 * 1.1))
         
         # 최소 창 크기 설정 - UI 리사이징 시 글자가 가려지지 않도록 최소 크기 설정
         self.setMinimumSize(900, 600)
@@ -890,18 +1155,65 @@ class ModbusServerSimulator(QMainWindow):
     def init_ui(self):
         """Initialize the user interface"""
         # 전체 애플리케이션 창의 최소 크기 설정
-        self.setMinimumSize(800, 900)  # 가로, 세로 최소 크기
+        # 세로 최소값을 낮춰, 레지스터가 적을 때 창을 내용 높이에 맞게 줄일 수 있도록 한다.
+        self.setMinimumSize(800, 600)  # 가로, 세로 최소 크기
         
         central_widget = QWidget()
         main_layout = QVBoxLayout(central_widget)
-        
+        # 섹션 간 간격을 적절히 좁혀 답답하지 않으면서 빈 공간을 줄인다.
+        main_layout.setContentsMargins(14, 12, 14, 10)
+        main_layout.setSpacing(8)
+
         # 타이틀 레이블
         title_label = QLabel(f"Modbus TCP Server Simulator  v{APP_VERSION}")
         title_label.setObjectName("title_label")
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(title_label)
         self.apply_neumorphism_effect(title_label)
-        
+
+        # 제목 하단 헤더 바: STATUS 영역(좌) + 액션 버튼 묶음(우)
+        header_bar = QHBoxLayout()
+        header_bar.setContentsMargins(10, 0, 10, 4)
+        header_bar.setSpacing(8)
+
+        # STATUS 영역 — 캡션 배지 + 상태 메시지를 하나의 박스로 명확히 구분
+        status_box = QWidget()
+        status_box.setObjectName("status_box")
+        status_box_layout = QHBoxLayout(status_box)
+        status_box_layout.setContentsMargins(12, 6, 12, 6)
+        status_box_layout.setSpacing(10)
+
+        status_caption = QLabel("STATUS")
+        status_caption.setObjectName("status_caption")
+        status_box_layout.addWidget(status_caption)
+
+        self.status_label = QLabel("Server not running")
+        self.status_label.setObjectName("status_label")
+        self.status_label.setStyleSheet("color: #94a3b8; font-weight: bold;")
+        status_box_layout.addWidget(self.status_label)
+        status_box_layout.addStretch(1)
+
+        self.apply_neumorphism_effect(status_box)
+        header_bar.addWidget(status_box, 1)
+
+        # 레지스터 표시 설정 패널을 펼치고 접는 토글 버튼 (기본은 접힘)
+        self.register_panel_button = QPushButton("▸ 레지스터 표시 설정")
+        self.register_panel_button.setObjectName("register_panel_button")
+        self.register_panel_button.setToolTip("표시할 레지스터 종류를 선택하는 패널을 열고 닫습니다")
+        self.register_panel_button.setMinimumWidth(150)
+        self.register_panel_button.clicked.connect(self.toggle_register_panel)
+        header_bar.addWidget(self.register_panel_button)
+
+        # 시퀀스 시뮬레이션 창 열기 버튼
+        self.sequence_button = QPushButton("시퀀스 시뮬레이션")
+        self.sequence_button.setObjectName("sequence_button")
+        self.sequence_button.setToolTip("노드 그래프로 신호 전송/대기/분기 시퀀스를 편집·실행합니다")
+        self.sequence_button.setMinimumWidth(150)
+        self.sequence_button.clicked.connect(self.open_sequence_window)
+        header_bar.addWidget(self.sequence_button)
+
+        main_layout.addLayout(header_bar)
+
         # Connection settings
         conn_group = QGroupBox("")
         conn_group.setObjectName("connection_group")
@@ -943,48 +1255,6 @@ class ModbusServerSimulator(QMainWindow):
         
         conn_group.setLayout(conn_layout)
         main_layout.addWidget(conn_group)
-        
-        # 상태 라벨 추가
-        self.status_label = QLabel("Server not running")
-        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.status_label.setObjectName("status_label")
-        self.status_label.setStyleSheet("color: #94a3b8; font-weight: bold;")
-        main_layout.addWidget(self.status_label)
-        
-        # Server options
-        options_layout = QHBoxLayout()
-        
-        # Set server busy
-        self.busy_checkbox = QCheckBox("Set server busy")
-        self.busy_checkbox.setEnabled(False)  # Not implemented yet
-        options_layout.addWidget(self.busy_checkbox)
-        
-        # Set server listen only
-        self.listen_only_checkbox = QCheckBox("Set server listen only")
-        self.listen_only_checkbox.setEnabled(False)  # Not implemented yet
-        options_layout.addWidget(self.listen_only_checkbox)
-
-        options_layout.addStretch()
-
-        # 시퀀스 시뮬레이션 창 열기 버튼
-        self.sequence_button = QPushButton("시퀀스 시뮬레이션")
-        self.sequence_button.setObjectName("sequence_button")
-        self.sequence_button.setToolTip("노드 그래프로 신호 전송/대기/분기 시퀀스를 편집·실행합니다")
-        self.sequence_button.clicked.connect(self.open_sequence_window)
-        options_layout.addWidget(self.sequence_button)
-
-        main_layout.addLayout(options_layout)
-        
-        # 레지스터 표시 설정 패널을 펼치고 접는 토글 버튼 (기본은 접힘)
-        self.register_panel_button = QPushButton("▸ 레지스터 표시 설정")
-        self.register_panel_button.setObjectName("register_panel_button")
-        self.register_panel_button.setToolTip("표시할 레지스터 종류를 선택하는 패널을 열고 닫습니다")
-        self.register_panel_button.clicked.connect(self.toggle_register_panel)
-        panel_button_layout = QHBoxLayout()
-        panel_button_layout.setContentsMargins(10, 0, 10, 0)
-        panel_button_layout.addWidget(self.register_panel_button)
-        panel_button_layout.addStretch(1)
-        main_layout.addLayout(panel_button_layout)
 
         # 레지스터 그룹 표시/숨김 체크박스 (접을 수 있는 패널 안에 배치)
         self.register_control_panel = QWidget()
@@ -1053,8 +1323,10 @@ class ModbusServerSimulator(QMainWindow):
         input_registers_group.setVisible(False)
         holding_registers_group.setVisible(True)  # 홀딩 레지스터 명시적으로 표시
         
-        main_layout.addLayout(self.registers_layout)
-        
+        # 레지스터 영역이 창 크기에 맞춰 남는 세로 공간을 모두 차지하도록 신축 계수 부여.
+        # (표는 QScrollArea(widgetResizable) 안에서 영역에 맞게 함께 리사이징된다.)
+        main_layout.addLayout(self.registers_layout, 1)
+
         # 상태바 추가
         self.statusBar().setObjectName("status_bar")
         self.statusBar().showMessage("Ready")
@@ -1193,7 +1465,7 @@ class ModbusServerSimulator(QMainWindow):
 
         # Create register widget
         if register_type == "holding_registers":
-            register_widget = RegisterWidget(register_type, columns=self.holding_columns)
+            register_widget = HoldingRegisterTable(columns=self.holding_columns)
         else:
             register_widget = RegisterWidget(register_type)
         register_widget.value_changed.connect(self.on_register_value_changed)
@@ -1206,6 +1478,8 @@ class ModbusServerSimulator(QMainWindow):
         scroll.setWidget(register_widget)
         scroll.setObjectName(f"{register_type}_scroll")
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)  # 테두리 제거
+        # 스크롤 영역이 창 크기에 맞춰 세로로 늘어나도록 한다.
+        scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         # 홀딩 레지스터는 컬럼 재구성을 위해 스크롤 영역 참조를 보관
         if register_type == "holding_registers":
@@ -1214,7 +1488,9 @@ class ModbusServerSimulator(QMainWindow):
         # Add to layout
         layout.addWidget(scroll)
         group.setLayout(layout)
-        
+        # 그룹도 창 크기에 맞춰 세로로 늘어나도록 한다.
+        group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+
         # Store reference to widget
         setattr(self, f"{register_type}_widget", register_widget)
 
@@ -1262,7 +1538,7 @@ class ModbusServerSimulator(QMainWindow):
             columns (list): [(start, count), ...] 형식의 컬럼 설정.
         """
         self.holding_columns = columns
-        new_widget = RegisterWidget("holding_registers", columns=columns)
+        new_widget = HoldingRegisterTable(columns=columns)
         new_widget.value_changed.connect(self.on_register_value_changed)
         new_widget.memo_changed.connect(self.on_memo_changed)
 
@@ -1992,6 +2268,9 @@ class ModbusServerSimulator(QMainWindow):
                     widget.line_edits[address].setText(hex_value)
                     widget.line_edits[address].blockSignals(old_state)
                     widget.values[address] = hex_value
+                    # 외부 클라이언트 쓰기로 값이 바뀌었음을 행 하이라이트로 알린다.
+                    if hasattr(widget, "flash_row"):
+                        widget.flash_row(address)
                 else:
                     logger.warning(f"No UI element found for holding register at address {address}")
                     

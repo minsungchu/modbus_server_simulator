@@ -34,27 +34,33 @@ from PySide6.QtGui import QIcon, QIntValidator, QRegularExpressionValidator, QPi
 from pymodbus.client import ModbusTcpClient
 from pymodbus.exceptions import ModbusException, ConnectionException
 
-# 로깅 설정
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger("ModbusClientSim")
+# 애플리케이션 버전 (pyproject.toml 단일 소스)
+from appversion import APP_VERSION
 
-# 파일 핸들러 추가
-file_handler = logging.FileHandler('modbus_client.log')
-file_handler.setLevel(logging.DEBUG)
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-file_handler.setFormatter(formatter)
+# 로깅 설정
+# - 파일은 회전 핸들러로 용량을 제한(최대 1MB × 3개)하여 로그 파일이 무한히 커지지 않도록 한다.
+# - 평상시에는 WARNING 이상만 기록한다. MODBUS_DEBUG=1 로 실행하면 INFO 까지 기록된다.
+from logging.handlers import RotatingFileHandler
+
+_LOG_LEVEL = logging.INFO if os.environ.get("MODBUS_DEBUG") == "1" else logging.WARNING
+
+logger = logging.getLogger("ModbusClientSim")
+logger.setLevel(_LOG_LEVEL)
+logger.propagate = False
+
+_log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+file_handler = RotatingFileHandler(
+    'modbus_client.log', maxBytes=1_000_000, backupCount=3, encoding='utf-8'
+)
+file_handler.setLevel(_LOG_LEVEL)
+file_handler.setFormatter(_log_formatter)
 logger.addHandler(file_handler)
 
-# 콘솔 핸들러 추가 (더 자세한 로그 출력)
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
-console_handler.setFormatter(formatter)
-logger.addHandler(console_handler)
-
-logger.info("Modbus TCP 클라이언트 시뮬레이터 로깅 시스템 초기화 완료")
+_console_handler = logging.StreamHandler()
+_console_handler.setLevel(logging.WARNING)
+_console_handler.setFormatter(_log_formatter)
+logger.addHandler(_console_handler)
 
 
 class ClientSignals(QObject):
@@ -78,7 +84,7 @@ class ModbusClientSimulator(QMainWindow):
     """
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Modbus TCP Client Simulator")
+        self.setWindowTitle(f"Modbus TCP Client Simulator  v{APP_VERSION}")
         
         # 클라이언트 객체 초기화
         self.client = None
@@ -130,67 +136,22 @@ class ModbusClientSimulator(QMainWindow):
         logger.info("Modbus TCP Client Simulator initialized")
         
     def apply_client_style(self, widget):
+        """클라이언트 UI에 공용 다크 테마(resources/style.qss)를 적용한다.
+
+        서버와 동일한 modern dark 테마를 사용한다. PyInstaller 번들에서도
+        동작하도록 _MEIPASS 경로를 우선 확인한다.
         """
-        클라이언트 애플리케이션의 스타일시트 적용
-        
-        클라이언트는 밝은 테마(라이트 그린)를 사용하여 서버와 시각적으로 구분됩니다.
-        """
-        self.setStyleSheet("""
-            QMainWindow {
-                background-color: #e8f5e9;
-            }
-            QPushButton {
-                background-color: #81c784;
-                border: none;
-                border-radius: 10px;
-                padding: 10px;
-                color: #1b5e20;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #66bb6a;
-            }
-            QPushButton:pressed {
-                background-color: #4caf50;
-            }
-            QLineEdit, QSpinBox {
-                background-color: #c8e6c9;
-                border: none;
-                border-radius: 10px;
-                padding: 5px;
-                color: #1b5e20;
-            }
-            QCheckBox {
-                color: #1b5e20;
-            }
-            QGroupBox {
-                border: 1px solid #a5d6a7;
-                border-radius: 10px;
-                margin-top: 10px;
-                padding-top: 10px;
-                color: #1b5e20;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                subcontrol-position: top center;
-                padding: 0 5px;
-                color: #1b5e20;
-                font-weight: bold;
-            }
-            QLabel {
-                color: #1b5e20;
-            }
-            QComboBox {
-                background-color: #c8e6c9;
-                border-radius: 10px;
-                padding: 5px;
-                color: #1b5e20;
-            }
-            QComboBox QAbstractItemView {
-                background-color: #c8e6c9;
-                color: #1b5e20;
-            }
-        """)
+        base = getattr(sys, "_MEIPASS", os.path.abspath(os.path.dirname(__file__)))
+        qss_path = os.path.join(base, "resources", "style.qss")
+        try:
+            with open(qss_path, "r", encoding="utf-8") as f:
+                self.setStyleSheet(f.read())
+        except OSError as e:
+            logger.warning(f"스타일시트 로드 실패, 기본 다크 테마 적용: {e}")
+            self.setStyleSheet(
+                "QWidget { background-color: #0f172a; color: #e2e8f0; "
+                "font-family: 'Segoe UI', 'Malgun Gothic', Arial, sans-serif; font-size: 10pt; }"
+            )
         
     def init_ui(self):
         """사용자 인터페이스 초기화"""
@@ -203,7 +164,7 @@ class ModbusClientSimulator(QMainWindow):
         self.create_client_icon()
         
         # 타이틀 라벨
-        title_label = QLabel("Modbus TCP Client Simulator")
+        title_label = QLabel(f"Modbus TCP Client Simulator  v{APP_VERSION}")
         title_label.setObjectName("title_label")
         title_label.setAlignment(Qt.AlignCenter)
         title_label.setFont(QFont("Arial", 14, QFont.Bold))
@@ -373,30 +334,7 @@ class ModbusClientSimulator(QMainWindow):
         self.connection_button.setIconSize(QSize(16, 16))
         
         # 버튼 텍스트와 아이콘 함께 표시
-        self.connection_button.setStyleSheet("""
-            QPushButton {
-                background-color: #c8e6c9;
-                color: #1b5e20;
-                border-radius: 10px;
-                padding: 5px 10px;
-                font-weight: bold;
-                text-align: center;
-            }
-            QPushButton:hover {
-                background-color: #a5d6a7;
-            }
-            QPushButton:pressed {
-                background-color: #81c784;
-            }
-            QPushButton:checked {
-                background-color: #ef5350;
-                color: white;
-            }
-            QPushButton:checked:hover {
-                background-color: #e53935;
-            }
-        """)
-        
+        # 스타일은 공용 다크 테마(style.qss #connection_button, :checked 포함)에서 처리됨
         connection_layout.addWidget(self.connection_button, 0, 4, 1, 2)  # 두 칸 차지
         
         # Range Read 그룹
@@ -409,39 +347,8 @@ class ModbusClientSimulator(QMainWindow):
         self.range_reg_type.addItems(["coils", "discrete_inputs", "holding_registers", "input_registers"])
         # 디폴트로 holding_registers 선택
         self.range_reg_type.setCurrentText("holding_registers")
-        # 콤보박스 스타일 개선
-        self.range_reg_type.setStyleSheet("""
-            QComboBox {
-                background-color: #c8e6c9;
-                border-radius: 10px;
-                padding: 5px;
-                color: #1b5e20;
-                min-width: 150px;
-                font-weight: bold;
-            }
-            QComboBox::drop-down {
-                subcontrol-origin: padding;
-                subcontrol-position: top right;
-                width: 20px;
-                border-left-width: 1px;
-                border-left-color: #81c784;
-                border-left-style: solid;
-                border-top-right-radius: 10px;
-                border-bottom-right-radius: 10px;
-            }
-            QComboBox::down-arrow {
-                image: url(resources/dropdown_arrow.png);
-                width: 12px;
-                height: 12px;
-            }
-            QComboBox QAbstractItemView {
-                background-color: #c8e6c9;
-                color: #1b5e20;
-                selection-background-color: #81c784;
-                selection-color: #1b5e20;
-                border-radius: 5px;
-            }
-        """)
+        # 콤보박스 스타일은 공용 다크 테마(style.qss QComboBox)에서 처리됨
+        self.range_reg_type.setMinimumWidth(150)
         range_layout.addWidget(self.range_reg_type, 0, 1)
         
         # 첫번째 줄 - 시작 주소
@@ -464,7 +371,7 @@ class ModbusClientSimulator(QMainWindow):
         
         # 두번째 줄 - 결과 표시 영역 (한 줄로 간결하게)
         self.range_result_label = QLabel("결과가 여기에 표시됩니다")
-        self.range_result_label.setStyleSheet("background-color: #f0f0f0; padding: 3px; border-radius: 5px;")
+        self.range_result_label.setStyleSheet("background-color: #16202e; color: #94a3b8; padding: 6px 10px; border: 1px solid #1f2937; border-radius: 8px;")
         range_layout.addWidget(self.range_result_label, 1, 0, 1, 7)
         
         parent_layout.addWidget(connection_group)
@@ -1056,7 +963,7 @@ class RegisterWidget(QWidget):
                 memo_edit = QLineEdit()
                 memo_edit.setPlaceholderText("메모 입력")
                 memo_edit.setMinimumWidth(90)  # 최소 너비 축소
-                memo_edit.setStyleSheet("border: 1px solid #bec8d1; border-radius: 8px; padding: 1px;")
+                memo_edit.setStyleSheet("border: 1px solid #334155; border-radius: 8px; padding: 1px;")
                 # 메모 필드 텍스트 변경 시 이벤트 연결
                 memo_edit.textChanged.connect(lambda text, addr=i: self.on_memo_changed(addr, text))
                 self.memo_edits[i] = memo_edit
@@ -1081,7 +988,7 @@ class RegisterWidget(QWidget):
                 memo_edit = QLineEdit()
                 memo_edit.setPlaceholderText("메모 입력")
                 memo_edit.setMinimumWidth(90)  # 최소 너비 축소
-                memo_edit.setStyleSheet("border: 1px solid #bec8d1; border-radius: 8px; padding: 1px;")
+                memo_edit.setStyleSheet("border: 1px solid #334155; border-radius: 8px; padding: 1px;")
                 # 메모 필드 텍스트 변경 시 이벤트 연결
                 memo_edit.textChanged.connect(lambda text, addr=i: self.on_memo_changed(addr, text))
                 self.memo_edits[i] = memo_edit
@@ -1142,7 +1049,7 @@ class RegisterWidget(QWidget):
             memo_edit = QLineEdit()
             memo_edit.setPlaceholderText("메모 입력")
             memo_edit.setMinimumWidth(90)  # 최소 너비 축소
-            memo_edit.setStyleSheet("border: 1px solid #bec8d1; border-radius: 8px; padding: 1px;")
+            memo_edit.setStyleSheet("border: 1px solid #334155; border-radius: 8px; padding: 1px;")
             # 메모 필드 텍스트 변경 시 이벤트 연결
             memo_edit.textChanged.connect(lambda text, a=addr: self.on_memo_changed(a, text))
             self.memo_edits[addr] = memo_edit
@@ -1207,7 +1114,7 @@ class RegisterWidget(QWidget):
             # 16진수 유효성 검사
             hex_validator = QRegularExpressionValidator(QRegularExpression("[0-9A-Fa-f]{1,4}"))
             line_edit.setValidator(hex_validator)
-            line_edit.setStyleSheet("border: 1px solid #bec8d1; border-radius: 10px; padding: 3px;")
+            line_edit.setStyleSheet("border: 1px solid #334155; border-radius: 10px; padding: 3px;")
             layout.addWidget(line_edit)            
             # 버튼 그룹
             button_container = QWidget()
@@ -1217,14 +1124,14 @@ class RegisterWidget(QWidget):
             
             # 읽기 버튼
             read_btn = QPushButton("R")
-            read_btn.setStyleSheet("border: 1px solid #bec8d1; border-radius: 8px; padding: 0px;")
+            read_btn.setStyleSheet("border: 1px solid #334155; border-radius: 8px; padding: 0px;")
             read_btn.setFixedSize(30, 22)  # 버튼 크기 축소
             read_btn.clicked.connect(lambda checked=False, addr=address, le=line_edit: self.read_register(addr, le))
             button_layout.addWidget(read_btn)
             
             # 쓰기 버튼 (홀딩 레지스터만 활성화)
             write_btn = QPushButton("W")
-            write_btn.setStyleSheet("border: 1px solid #bec8d1; border-radius: 8px; padding: 0px;")
+            write_btn.setStyleSheet("border: 1px solid #334155; border-radius: 8px; padding: 0px;")
             write_btn.setFixedSize(30, 22)  # 버튼 크기 축소
             write_btn.setEnabled(self.writable)
             if self.writable:  # 홀딩 레지스터는 쓰기 가능
@@ -1337,29 +1244,34 @@ class RegisterWidget(QWidget):
             line_edit.setText(f"{self.values.get(address, 0):04X}")
 
 
-if __name__ == "__main__":
+def main():
+    """Modbus TCP 클라이언트 시뮬레이터 애플리케이션을 실행한다."""
     app = QApplication(sys.argv)
     # Qt 6에서는 기본적으로 고해상도 픽스맵을 사용하므로 속성 설정 제거
-    
+
     # 애플리케이션 아이콘 설정 (작업 표시줄 아이콘용)
     app_icon = QIcon("resources/app_icon.svg")
     app.setWindowIcon(app_icon)
-    
+
     # Windows에서 작업 표시줄 아이콘을 설정하기 위한 추가 작업
     import ctypes
     if hasattr(ctypes, 'windll'):  # Windows 환경에서만 실행
         myappid = 'CMES.ModbusTCP.ClientSimulator.1.0'  # 고유 애플리케이션 ID
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
-    
+
     # 폰트 설정
     font = app.font()
     font.setPointSize(10)
     app.setFont(font)
-    
+
     # 애플리케이션 시작
     window = ModbusClientSimulator()
     window.setWindowIcon(app_icon)  # 창 아이콘 설정
     window.show()
-    
+
     logger.info("클라이언트 애플리케이션 실행")
     sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

@@ -63,6 +63,7 @@ pyinstaller --noconfirm --onefile --windowed ^
     --icon=%ICON_PATH% ^
     --version-file=modbus_tcp_server_version.txt ^
     --name "modbus_tcp_server" ^
+    --add-data "resources\default_sequence.json;resources" ^
     --hidden-import=pymodbus.server ^
     --hidden-import=pymodbus.transaction ^
     --hidden-import=pymodbus.datastore ^

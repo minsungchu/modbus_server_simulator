@@ -1,0 +1,364 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "START",
+      "x": -153.98737500000004,
+      "y": -499.031,
+      "label": "",
+      "enabled": false
+    },
+    {
+      "id": "n4",
+      "type": "SEND",
+      "x": -152.99193749999998,
+      "y": -272.1061249999997,
+      "label": "정보 등록",
+      "writes": [
+        {
+          "reg_type": "holding_registers",
+          "addr": 2,
+          "value": 11,
+          "op": "set"
+        },
+        {
+          "reg_type": "holding_registers",
+          "addr": 5,
+          "value": 3,
+          "op": "set"
+        }
+      ]
+    },
+    {
+      "id": "n6",
+      "type": "WAIT",
+      "x": -152.99193749999998,
+      "y": -55.24362499999995,
+      "label": "",
+      "conditions": [
+        {
+          "reg_type": "holding_registers",
+          "addr": 4100,
+          "op": "==",
+          "value": 5
+        },
+        {
+          "reg_type": "holding_registers",
+          "addr": 4100,
+          "op": "==",
+          "value": 6
+        }
+      ],
+      "timeout_ms": 1
+    },
+    {
+      "id": "n9",
+      "type": "SEND",
+      "x": -152.99193749999998,
+      "y": -157.0686249999998,
+      "label": "시작",
+      "writes": [
+        {
+          "reg_type": "holding_registers",
+          "addr": 6,
+          "value": 1,
+          "op": "set"
+        }
+      ]
+    },
+    {
+      "id": "n13",
+      "type": "SEND",
+      "x": -152.99193749999998,
+      "y": 77.79804166666679,
+      "label": "",
+      "writes": [
+        {
+          "reg_type": "holding_registers",
+          "addr": 6,
+          "value": 0,
+          "op": "set"
+        }
+      ]
+    },
+    {
+      "id": "n14",
+      "type": "END",
+      "x": -153.98737500000004,
+      "y": 242.82337500000017,
+      "label": "",
+      "result": ""
+    },
+    {
+      "id": "n15",
+      "type": "SEND",
+      "x": -152.99193749999998,
+      "y": -371.1436249999996,
+      "label": "",
+      "writes": [
+        {
+          "reg_type": "holding_registers",
+          "addr": 4100,
+          "value": 0,
+          "op": "set"
+        }
+      ]
+    },
+    {
+      "id": "n8",
+      "type": "START",
+      "x": 236.74826874999997,
+      "y": -493.2375625,
+      "label": ""
+    },
+    {
+      "id": "n11",
+      "type": "SEND",
+      "x": 236.74826874999997,
+      "y": -379.69672916666656,
+      "label": "",
+      "writes": [
+        {
+          "reg_type": "holding_registers",
+          "addr": 4110,
+          "value": 0,
+          "op": "set"
+        }
+      ]
+    },
+    {
+      "id": "n12",
+      "type": "SEND",
+      "x": 236.74826874999997,
+      "y": -278.9500624999997,
+      "label": "정보 등록",
+      "writes": [
+        {
+          "reg_type": "holding_registers",
+          "addr": 12,
+          "value": 11,
+          "op": "set"
+        },
+        {
+          "reg_type": "holding_registers",
+          "addr": 15,
+          "value": 3,
+          "op": "set"
+        }
+      ]
+    },
+    {
+      "id": "n16",
+      "type": "SEND",
+      "x": 139.24826874999997,
+      "y": -136.2150624999999,
+      "label": "시작",
+      "writes": [
+        {
+          "reg_type": "holding_registers",
+          "addr": 16,
+          "value": 1,
+          "op": "set"
+        }
+      ]
+    },
+    {
+      "id": "n17",
+      "type": "WAIT",
+      "x": 224.58126875,
+      "y": 135.70114583333338,
+      "label": "",
+      "conditions": [
+        {
+          "reg_type": "holding_registers",
+          "addr": 4110,
+          "op": "==",
+          "value": 5
+        },
+        {
+          "reg_type": "holding_registers",
+          "addr": 4110,
+          "op": "==",
+          "value": 6
+        }
+      ],
+      "timeout_ms": 1
+    },
+    {
+      "id": "n18",
+      "type": "SEND",
+      "x": 224.58126875,
+      "y": 292.2419791666666,
+      "label": "",
+      "writes": [
+        {
+          "reg_type": "holding_registers",
+          "addr": 16,
+          "value": 0,
+          "op": "set"
+        }
+      ]
+    },
+    {
+      "id": "n19",
+      "type": "END",
+      "x": 224.58126875,
+      "y": 396.4317500000001,
+      "label": "",
+      "result": ""
+    },
+    {
+      "id": "n20",
+      "type": "SEND",
+      "x": 347.41526875000005,
+      "y": -136.2150624999999,
+      "label": "시작",
+      "writes": [
+        {
+          "reg_type": "holding_registers",
+          "addr": 16,
+          "value": 1,
+          "op": "set"
+        }
+      ]
+    },
+    {
+      "id": "n21",
+      "type": "SEND",
+      "x": 347.41526875000005,
+      "y": -37.24362499999995,
+      "label": "",
+      "writes": []
+    }
+  ],
+  "edges": [
+    {
+      "from_node": "n4",
+      "from_port": "next",
+      "to_node": "n9"
+    },
+    {
+      "from_node": "n9",
+      "from_port": "next",
+      "to_node": "n6"
+    },
+    {
+      "from_node": "n6",
+      "from_port": "cond_0",
+      "to_node": "n13"
+    },
+    {
+      "from_node": "n6",
+      "from_port": "cond_1",
+      "to_node": "n13"
+    },
+    {
+      "from_node": "n6",
+      "from_port": "timeout",
+      "to_node": "n13"
+    },
+    {
+      "from_node": "n15",
+      "from_port": "next",
+      "to_node": "n4"
+    },
+    {
+      "from_node": "n1",
+      "from_port": "next",
+      "to_node": "n15"
+    },
+    {
+      "from_node": "n13",
+      "from_port": "next",
+      "to_node": "n14"
+    },
+    {
+      "from_node": "n8",
+      "from_port": "next",
+      "to_node": "n11"
+    },
+    {
+      "from_node": "n11",
+      "from_port": "next",
+      "to_node": "n12"
+    },
+    {
+      "from_node": "n12",
+      "from_port": "next",
+      "to_node": "n16"
+    },
+    {
+      "from_node": "n16",
+      "from_port": "next",
+      "to_node": "n17",
+      "from_side": "bottom",
+      "to_side": "top"
+    },
+    {
+      "from_node": "n17",
+      "from_port": "cond_0",
+      "to_node": "n18"
+    },
+    {
+      "from_node": "n17",
+      "from_port": "cond_1",
+      "to_node": "n18"
+    },
+    {
+      "from_node": "n17",
+      "from_port": "timeout",
+      "to_node": "n18"
+    },
+    {
+      "from_node": "n18",
+      "from_port": "next",
+      "to_node": "n19",
+      "to_side": "top"
+    },
+    {
+      "from_node": "n12",
+      "from_port": "next",
+      "to_node": "n20",
+      "from_side": "bottom",
+      "to_side": "top"
+    },
+    {
+      "from_node": "n20",
+      "from_port": "next",
+      "to_node": "n21",
+      "from_side": "bottom",
+      "to_side": "top"
+    },
+    {
+      "from_node": "n21",
+      "from_port": "next",
+      "to_node": "n17",
+      "from_side": "bottom",
+      "to_side": "top"
+    }
+  ],
+  "groups": [
+    {
+      "id": "g2",
+      "label": "그룹 2",
+      "x": -193.62350000000004,
+      "y": -406.88862499999993,
+      "w": 248.0635,
+      "h": 604.25,
+      "color": "#a855f7",
+      "mode": "loop",
+      "loop_count": 2,
+      "iter_values": [],
+      "iter_reg_type": null,
+      "iter_addr": null,
+      "members": [
+        "n4",
+        "n6",
+        "n13",
+        "n9"
+      ]
+    }
+  ],
+  "notes": []
+}

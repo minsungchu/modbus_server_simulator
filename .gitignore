@@ -1,0 +1,28 @@
+# uv / virtualenv
+.venv/
+env_modbus/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# PyInstaller 빌드 산출물
+build/
+dist/
+*.spec
+
+# 런타임 생성 파일
+*.log
+*.log.*
+*.bak
+modbus_registers.json
+modbus_sequence.json
+icons/
+
+# 사용자 런타임 데이터(시퀀스 세트). 배포 기본값은 resources/default_sequence.json 에서 시드됨.
+sequences/
+
+# 에디터/도구 로컬 상태
+.omc/
+.claude/
