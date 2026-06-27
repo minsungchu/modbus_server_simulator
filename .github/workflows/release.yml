@@ -55,14 +55,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install "pymodbus>=3.9.2,<3.10" "PySide6==6.9.1" "pyinstaller>=6.14.1"
-      - name: Build executables
-        run: python build.py all
+      - name: Build executable (server only)
+        run: python build.py server
       - name: Stage release artifacts
         shell: bash
         run: |
           mkdir -p release
           cp "dist/modbus_tcp_server${{ matrix.ext }}" "release/modbus_tcp_server-${{ matrix.platform }}-x64${{ matrix.ext }}"
-          cp "dist/modbus_tcp_client${{ matrix.ext }}" "release/modbus_tcp_client-${{ matrix.platform }}-x64${{ matrix.ext }}"
       - uses: actions/upload-artifact@v4
         with:
           name: build-${{ matrix.platform }}

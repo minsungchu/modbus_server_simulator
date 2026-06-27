@@ -46,6 +46,8 @@ uv run python build.py all      # 서버+클라이언트  (server | client | all
 
 - **푸시 / PR**: 테스트(offscreen) + 빌드까지 수행하고 아티팩트를 업로드한다.
 - **태그 `v*` 푸시**: 위 빌드 결과를 **GitHub Release** 에 자동 첨부한다.
+- 릴리스 빌드 대상은 **서버만**이다(클라이언트는 CI 빌드에서 제외). 클라이언트가
+  필요하면 로컬에서 `python build.py client` 로 빌드한다.
 
 ```bash
 # 새 버전 릴리스
@@ -53,8 +55,7 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
-릴리스에는 `modbus_tcp_server-{windows,linux}-x64` 와
-`modbus_tcp_client-{windows,linux}-x64` 실행파일이 첨부된다.
+릴리스에는 `modbus_tcp_server-{windows,linux}-x64` 실행파일이 첨부된다.
 
 ## 의존성
 
