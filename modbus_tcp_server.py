@@ -69,6 +69,31 @@ from pymodbus.server import StartAsyncTcpServer, ServerAsyncStop
 # 애플리케이션 버전 (pyproject.toml 단일 소스)
 from appversion import APP_VERSION
 
+
+def _ensure_writable_data_dir() -> None:
+    """패키징(frozen) 실행 시 작업 디렉터리를 사용자 쓰기 가능 폴더로 옮긴다.
+
+    설치형 실행파일은 보통 'C:\\Program Files\\...' 처럼 일반 사용자가 쓸 수 없는
+    위치에 설치된다. 로그/레지스터/시퀀스 등 런타임 파일은 모두 상대경로로
+    저장되므로, 이 폴더로 CWD 를 옮겨 PermissionError 를 막는다. (리소스는
+    sys._MEIPASS 절대경로로 읽으므로 영향 없음.) 소스 실행에는 영향이 없다.
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    if os.name == "nt":
+        root = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    else:
+        root = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    data_dir = os.path.join(root, "ModbusTcpServer")
+    try:
+        os.makedirs(data_dir, exist_ok=True)
+        os.chdir(data_dir)
+    except OSError:
+        pass  # 폴더 생성/이동 실패 시 기존 동작 유지
+
+
+_ensure_writable_data_dir()
+
 # 로깅 설정
 # - 파일은 회전 핸들러로 용량을 제한(최대 1MB × 3개)하여 로그 파일이 무한히 커지지 않도록 한다.
 # - 평상시에는 WARNING 이상(에러/경고)만 기록한다. 자세한 디버그가 필요하면
