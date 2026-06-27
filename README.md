@@ -45,8 +45,10 @@ uv run python build.py all      # 서버+클라이언트  (server | client | all
 `.github/workflows/release.yml` 가 Windows·Ubuntu 실행파일을 자동 빌드한다.
 
 - **푸시 / PR**: 테스트(offscreen) + 빌드까지 수행하고 아티팩트를 업로드한다.
-- **태그 `v*` 푸시**: 위 빌드 결과를 **GitHub Release** 에 자동 첨부한다.
-- 릴리스 빌드 대상은 **서버만**이다(클라이언트는 CI 빌드에서 제외). 클라이언트가
+- **태그 `v*` 푸시**: 아래 **설치파일**을 만들어 **GitHub Release** 에 자동 첨부한다.
+  - Windows: `modbus_tcp_server-<버전>-windows-x64-setup.exe` (Inno Setup 인스톨러)
+  - Ubuntu: `modbus_tcp_server-<버전>-linux-x64.deb` (Debian 패키지)
+- 릴리스 대상은 **서버만**이다(클라이언트는 CI 빌드에서 제외). 클라이언트가
   필요하면 로컬에서 `python build.py client` 로 빌드한다.
 
 ```bash
@@ -55,7 +57,16 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
-릴리스에는 `modbus_tcp_server-{windows,linux}-x64` 실행파일이 첨부된다.
+### 설치 방법
+
+- **Windows**: `...-setup.exe` 실행 → 마법사를 따라 설치(시작 메뉴/바탕화면 아이콘 생성).
+- **Ubuntu**: `.deb` 더블클릭(소프트웨어 센터) 또는 터미널에서 설치. apt 가 Qt
+  런타임 라이브러리(libegl1, libxcb-cursor0 등)를 자동으로 함께 설치한다.
+
+  ```bash
+  sudo apt install ./modbus_tcp_server-1.0.0-linux-x64.deb
+  # 실행: 앱 메뉴의 "Modbus TCP Server Simulator" 또는 터미널에서 modbus-tcp-server
+  ```
 
 ## 의존성
 

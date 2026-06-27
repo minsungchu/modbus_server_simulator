@@ -57,11 +57,36 @@ jobs:
           pip install "pymodbus>=3.9.2,<3.10" "PySide6==6.9.1" "pyinstaller>=6.14.1"
       - name: Build executable (server only)
         run: python build.py server
-      - name: Stage release artifacts
+
+      - name: Resolve version
+        id: ver
         shell: bash
         run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build Windows installer (Inno Setup)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc "/DMyAppVersion=${{ steps.ver.outputs.version }}" packaging\windows\installer.iss
+          New-Item -ItemType Directory -Force release | Out-Null
+          Copy-Item packaging\windows\output\*setup.exe release\
+
+      - name: Build Debian package (.deb)
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          sudo apt-get update && sudo apt-get install -y imagemagick
+          bash packaging/linux/build_deb.sh "${{ steps.ver.outputs.version }}"
           mkdir -p release
-          cp "dist/modbus_tcp_server${{ matrix.ext }}" "release/modbus_tcp_server-${{ matrix.platform }}-x64${{ matrix.ext }}"
+          cp packaging/linux/*.deb release/
+
       - uses: actions/upload-artifact@v4
         with:
           name: build-${{ matrix.platform }}
