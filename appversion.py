@@ -9,7 +9,7 @@ import os
 import sys
 
 # pyproject.toml 의 [project].version 과 동일하게 유지할 것.
-FALLBACK_VERSION = "1.0.0"
+FALLBACK_VERSION = "1.0.1"
 
 
 def get_version() -> str:

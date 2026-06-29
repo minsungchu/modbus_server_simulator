@@ -1,6 +1,6 @@
 [project]
 name = "modbus-tcp-simulator"
-version = "1.0.0"
+version = "1.0.1"
 description = "Modbus TCP 서버/클라이언트 시뮬레이터 (PySide6 GUI)"
 readme = "README.md"
 requires-python = ">=3.11"
