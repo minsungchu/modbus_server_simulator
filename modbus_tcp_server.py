@@ -2350,16 +2350,15 @@ if __name__ == "__main__":
         app = QApplication(sys.argv)
         app.setApplicationName("Modbus Server Simulator")
         
-        # PyInstaller 번들링된 EXE에서 실행 중인 경우 처리
+        # NOTE: 예전에는 여기서 os.chdir(sys._MEIPASS) 로 CWD 를 번들 추출 폴더로
+        # 옮겼으나, 이는 _ensure_writable_data_dir() 가 잡아둔 사용자 데이터 폴더
+        # (%LOCALAPPDATA%\ModbusTcpServer) 를 무력화해 시퀀스/레지스터 등 런타임
+        # 파일이 PyInstaller 임시폴더(_MEIxxxx)에 쓰였다가 종료 시 삭제되는
+        # 데이터 손실을 유발했다. 리소스는 모두 절대 _MEIPASS 경로로 읽으므로
+        # 번들 디렉토리로 chdir 할 필요가 없어 제거한다.
         if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
             logger.info("PyInstaller 번들에서 실행 중입니다.")
-            
-            # 워킹 디렉토리 설정
-            # 일부 환경에서는 워킹 디렉토리가 임시 폴더로 설정되어 문제 발생
-            bundle_dir = getattr(sys, '_MEIPASS', os.path.abspath(os.path.dirname(__file__)))
-            os.chdir(bundle_dir)
-            logger.info(f"작업 디렉토리를 번들 디렉토리로 변경: {bundle_dir}")
-        
+
         # 내장된 QSS 스타일 설정
         app.setStyleSheet(EMBEDDED_QSS_STYLE)
         logger.info("애플리케이션 수준에서 QSS 스타일 적용")
